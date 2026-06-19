@@ -91,6 +91,7 @@ def install_requirements(verbose=False):
         "torchsde",
         "ninja",
         "pydantic",
+        "fal-client",
     ]
     pip_install_packages(common)
 

@@ -33,5 +33,6 @@ build:
     - "matplotlib==3.6.3"
     - "omegaconf==2.3.0"
     - "numexpr==2.8.4"
+    - "fal-client>=0.5.0"
 
 predict: "predict.py:Predictor"

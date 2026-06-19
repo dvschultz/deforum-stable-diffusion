@@ -52,7 +52,7 @@ def setup_environment():
             'einops==0.4.1 pytorch-lightning==1.7.7 torchdiffeq==0.2.3 torchsde==0.2.5',
             'ftfy timm transformers open-clip-torch omegaconf torchmetrics==0.11.4',
             'safetensors kornia accelerate jsonmerge matplotlib resize-right',
-            'scikit-learn numpngw pydantic'
+            'scikit-learn numpngw pydantic fal-client'
         ]
         for package in packages:
             print(f"..installing {package}")
@@ -83,6 +83,24 @@ from helpers.render import render_animation, render_input_video, render_image_ba
 from helpers.model_load import make_linear_decode, load_model, get_model_output_paths
 from helpers.aesthetics import load_aesthetics_model
 from helpers.prompts import Prompts
+
+# %%
+# !! {"metadata":{
+# !!   "cellView": "form",
+# !!   "id": "falkeysetup01"
+# !! }}
+#@markdown **fal.ai API Key**
+#@markdown Generation runs on the hosted Z-Image Turbo model via fal.ai.
+#@markdown Get a key at https://fal.ai/dashboard/keys and paste it below, or
+#@markdown leave blank to use an existing `FAL_KEY` environment variable.
+import os
+from getpass import getpass
+
+fal_key = "" #@param {type:"string"}
+if fal_key:
+    os.environ["FAL_KEY"] = fal_key.strip()
+if not os.environ.get("FAL_KEY"):
+    os.environ["FAL_KEY"] = getpass("Enter your FAL_KEY: ").strip()
 
 # %%
 # !! {"metadata":{
