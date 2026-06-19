@@ -1,303 +1,136 @@
+"""Frame generation adapter.
+
+Historically this ran the in-process Stable Diffusion pipeline (encode -> sample
+-> decode). It now routes to the hosted Z-Image Turbo model via
+``helpers.zimage_client``. The function signature and return-value contract are
+preserved so the animation engine above it (``helpers/render.py``) is unchanged:
+
+  - returns a ``results`` list of PIL images (one per ``n_samples``)
+  - when ``return_sample=True``, prepends a ``[-1,1]`` sample tensor that the
+    render loop warps into the next frame's init image
+
+The render loop hands us a pixel init image (a warped, color-matched, noised
+previous frame) plus a Deforum ``strength``; we choose the endpoint by request
+shape and call the client. There is no latent space and no per-step callback.
+"""
+
 # Standard library imports
 import os
 
 # Related third-party imports
-import torch
 import numpy as np
-from PIL import Image
-import torchvision.transforms.functional as TF
-from pytorch_lightning import seed_everything
-from torch import autocast
-from contextlib import nullcontext
-from einops import rearrange, repeat
+import torch
+from PIL import Image, ImageOps, ImageFilter
 
 # Local application/library specific imports
-from .k_samplers import sampler_fn, make_inject_timing_fn
-from .callback import SamplerCallback
-from .conditioning import exposure_loss, make_mse_loss, get_color_palette, make_clip_loss_fn
-from .conditioning import make_rgb_color_match_loss, blue_loss_fn, threshold_by, make_aesthetics_loss_fn, mean_loss_fn, var_loss_fn, exposure_loss
-from .model_wrap import CFGDenoiserWithGrad
-from .load_images import load_img, prepare_mask, prepare_overlay_mask
-from ldm.models.diffusion.plms import PLMSSampler
-from ldm.models.diffusion.ddim import DDIMSampler
-from k_diffusion.external import CompVisDenoiser, CompVisVDenoiser
+from .animation import sample_from_cv2, sample_to_cv2
+from . import zimage_client as zc
 
 
 def add_noise(sample: torch.Tensor, noise_amt: float) -> torch.Tensor:
     return sample + torch.randn(sample.shape, device=sample.device) * noise_amt
 
+
+def _sample_to_pil(sample: torch.Tensor) -> Image.Image:
+    """Convert a ``[-1,1]`` sample tensor ([1,3,H,W] or [3,H,W]) to a PIL RGB image."""
+    arr = sample_to_cv2(sample, type=np.uint8)  # HWC uint8 RGB
+    return Image.fromarray(arr)
+
+
+def _pil_to_sample(pil: Image.Image) -> torch.Tensor:
+    """Convert a PIL RGB image to a ``[-1,1]`` float16 tensor ([1,3,H,W]).
+
+    Inverse of ``_sample_to_pil``; matches the contract the render loop expects
+    from the old ``decode_first_stage`` output so frame warping is unchanged.
+    """
+    return sample_from_cv2(np.array(pil.convert("RGB")))
+
+
+def _load_init_pil(args) -> Image.Image:
+    """Return a PIL init image (resized to W x H) from init_sample or init_image, else None."""
+    if getattr(args, "init_sample", None) is not None:
+        return _sample_to_pil(args.init_sample)
+    if args.use_init and getattr(args, "init_image", None):
+        from .load_images import load_img
+        img_t, _ = load_img(
+            args.init_image,
+            shape=(args.W, args.H),
+            use_alpha_as_mask=args.use_alpha_as_mask,
+        )
+        return _sample_to_pil(img_t)
+    return None
+
+
+def _load_mask_pil(args) -> Image.Image:
+    """Return a PIL 'L' mask (white = regions that change), resized to W x H, else None."""
+    mask_src = getattr(args, "mask_file", None)
+    if not mask_src:
+        return None
+    from .load_images import load_mask_latent
+    mask = load_mask_latent(mask_src, (1, 1, args.H, args.W)).convert("L")
+    mask = mask.resize((args.W, args.H), Image.LANCZOS)
+    if getattr(args, "invert_mask", False):
+        mask = ImageOps.invert(mask)
+    return mask
+
+
+def _apply_overlay_mask(generated: Image.Image, init_pil: Image.Image,
+                        mask_pil: Image.Image, args) -> Image.Image:
+    """Composite the original init back into the unmasked regions (pixel-space).
+
+    Mirrors the prior latent overlay so masked areas (white) take the generated
+    result and the rest is preserved, without degrading the unchanged regions.
+    """
+    blur = getattr(args, "mask_overlay_blur", 0) or 0
+    soft_mask = mask_pil.filter(ImageFilter.GaussianBlur(blur)) if blur > 0 else mask_pil
+    return Image.composite(generated.convert("RGB"), init_pil.convert("RGB"), soft_mask)
+
+
 def generate(args, root, frame=0, return_latent=False, return_sample=False, return_c=False):
-    seed_everything(args.seed)
+    if return_latent or return_c:
+        raise NotImplementedError(
+            "return_latent / return_c are unavailable with the Z-Image Turbo backend "
+            "(no access to latents or text embeddings). Interpolation now uses "
+            "pixel-space blending instead -- see helpers/render.py:render_interpolation."
+        )
+
     os.makedirs(args.outdir, exist_ok=True)
 
-    sampler = PLMSSampler(root.model) if args.sampler == 'plms' else DDIMSampler(root.model)
-    if root.model.parameterization == "v":
-        model_wrap = CompVisVDenoiser(root.model)
-    else:
-        model_wrap = CompVisDenoiser(root.model)
-    batch_size = args.n_samples
+    prompt = args.cond_prompt
+    assert prompt is not None, "generate requires args.cond_prompt"
 
-    # cond prompts
-    cond_prompt = args.cond_prompt
-    assert cond_prompt is not None
-    cond_data = [batch_size * [cond_prompt]]
+    n_samples = int(getattr(args, "n_samples", 1) or 1)
+    steps = getattr(args, "steps", zc.MAX_STEPS)
+    seed = getattr(args, "seed", None)
+    acceleration = getattr(args, "acceleration", "regular")
 
-    # uncond prompts
-    uncond_prompt = args.uncond_prompt
-    assert uncond_prompt is not None
-    uncond_data = [batch_size * [uncond_prompt]]
-    
-    precision_scope = autocast if args.precision == "autocast" else nullcontext
+    init_pil = _load_init_pil(args)
+    has_init = init_pil is not None
 
-    init_latent = None
-    mask_image = None
-    init_image = None
-    if args.init_latent is not None:
-        init_latent = args.init_latent
-    elif args.init_sample is not None:
-        with precision_scope("cuda"):
-            init_latent = root.model.get_first_stage_encoding(root.model.encode_first_stage(args.init_sample))
-    elif args.use_init and args.init_image != None and args.init_image != '':
-        init_image, mask_image = load_img(args.init_image, 
-                                          shape=(args.W, args.H),  
-                                          use_alpha_as_mask=args.use_alpha_as_mask)
-        if args.add_init_noise:
-            init_image = add_noise(init_image,args.init_noise)
-        init_image = init_image.to(root.device)
-        init_image = repeat(init_image, '1 ... -> b ...', b=batch_size)
-        with precision_scope("cuda"):
-            init_latent = root.model.get_first_stage_encoding(root.model.encode_first_stage(init_image))  # move to latent space        
-
-    if not args.use_init and args.strength > 0 and args.strength_0_no_init:
-        #print("\nNo init image, but strength > 0. Strength has been auto set to 0, since use_init is False.")
-        #print("If you want to force strength > 0 with no init, please set strength_0_no_init to False.\n")
+    # No init image, but strength > 0: auto-zero strength (mirrors prior behavior).
+    if not has_init and args.strength > 0 and args.strength_0_no_init:
         args.strength = 0
 
-    # Mask functions
-    if args.use_mask:
-        assert args.mask_file is not None or mask_image is not None, "use_mask==True: An mask image is required for a mask. Please enter a mask_file or use an init image with an alpha channel"
-        assert args.use_init, "use_mask==True: use_init is required for a mask"
-        assert init_latent is not None, "use_mask==True: An latent init image is required for a mask"
+    mask_pil = _load_mask_pil(args) if (getattr(args, "use_mask", False) and has_init) else None
 
-
-        mask = prepare_mask(args.mask_file if mask_image is None else mask_image, 
-                            init_latent.shape,
-                            args.mask_contrast_adjust, 
-                            args.mask_brightness_adjust,
-                            args.invert_mask)
-        
-        if (torch.all(mask == 0) or torch.all(mask == 1)) and args.use_alpha_as_mask:
-            raise Warning("use_alpha_as_mask==True: Using the alpha channel from the init image as a mask, but the alpha channel is blank.")
-        
-        mask = mask.to(root.device)
-        mask = repeat(mask, '1 ... -> b ...', b=batch_size)
+    # Route by request shape (KTD-3).
+    if mask_pil is not None:
+        images = zc.inpaint(prompt, init_pil, mask_pil, args.strength, args.W, args.H,
+                            seed=seed, steps=steps, num_images=n_samples, acceleration=acceleration)
+    elif has_init and args.strength > 0:
+        images = zc.img2img(prompt, init_pil, args.strength, args.W, args.H,
+                            seed=seed, steps=steps, num_images=n_samples, acceleration=acceleration)
     else:
-        mask = None
+        images = zc.txt2img(prompt, args.W, args.H,
+                            seed=seed, steps=steps, num_images=n_samples, acceleration=acceleration)
 
-    assert not ( (args.use_mask and args.overlay_mask) and (args.init_sample is None and init_image is None)), "Need an init image when use_mask == True and overlay_mask == True"
-
-    # Init MSE loss image
-    init_mse_image = None
-    if args.init_mse_scale and args.init_mse_image != None and args.init_mse_image != '':
-        init_mse_image, mask_image = load_img(args.init_mse_image,
-                                          shape=(args.W, args.H),
-                                          use_alpha_as_mask=args.use_alpha_as_mask)
-        init_mse_image = init_mse_image.to(root.device)
-        init_mse_image = repeat(init_mse_image, '1 ... -> b ...', b=batch_size)
-
-    assert not ( args.init_mse_scale != 0 and (args.init_mse_image is None or args.init_mse_image == '') ), "Need an init image when init_mse_scale != 0"
-
-    t_enc = int((1.0-args.strength) * args.steps)
-    print(f"tenc: {t_enc}")
-
-    # Noise schedule for the k-diffusion samplers (used for masking)
-    k_sigmas = model_wrap.get_sigmas(args.steps)
-    args.clamp_schedule = dict(zip(k_sigmas.tolist(), np.linspace(args.clamp_start,args.clamp_stop,args.steps+1)))
-    k_sigmas = k_sigmas[len(k_sigmas)-t_enc-1:]
-
-    if args.sampler in ['plms','ddim']:
-        sampler.make_schedule(ddim_num_steps=args.steps, ddim_eta=args.ddim_eta, verbose=False)
-
-    if args.colormatch_scale != 0:
-        assert args.colormatch_image is not None, "If using color match loss, colormatch_image is needed"
-        colormatch_image, _ = load_img(args.colormatch_image)
-        colormatch_image = colormatch_image.to('cpu')
-        del(_)
-    else:
-        colormatch_image = None
-
-    # Loss functions
-    if args.init_mse_scale != 0:
-        if args.decode_method == "linear":
-            mse_loss_fn = make_mse_loss(root.model.linear_decode(root.model.get_first_stage_encoding(root.model.encode_first_stage(init_mse_image.to(root.device)))))
-        else:
-            mse_loss_fn = make_mse_loss(init_mse_image)
-    else:
-        mse_loss_fn = None
-
-    if args.colormatch_scale != 0:
-        _,_ = get_color_palette(root, args.colormatch_n_colors, colormatch_image, verbose=True) # display target color palette outside the latent space
-        if args.decode_method == "linear":
-            grad_img_shape = (int(args.W/args.f), int(args.H/args.f))
-            colormatch_image = root.model.linear_decode(root.model.get_first_stage_encoding(root.model.encode_first_stage(colormatch_image.to(root.device))))
-            colormatch_image = colormatch_image.to('cpu')
-        else:
-            grad_img_shape = (args.W, args.H)
-        color_loss_fn = make_rgb_color_match_loss(root,
-                                                  colormatch_image, 
-                                                  n_colors=args.colormatch_n_colors, 
-                                                  img_shape=grad_img_shape,
-                                                  ignore_sat_weight=args.ignore_sat_weight)
-    else:
-        color_loss_fn = None
-
-    if args.clip_scale != 0:
-        clip_loss_fn = make_clip_loss_fn(root, args)
-    else:
-        clip_loss_fn = None
-
-    if args.aesthetics_scale != 0:
-        aesthetics_loss_fn = make_aesthetics_loss_fn(root, args)
-    else:
-        aesthetics_loss_fn = None
-
-    if args.exposure_scale != 0:
-        exposure_loss_fn = exposure_loss(args.exposure_target)
-    else:
-        exposure_loss_fn = None
-
-    loss_fns_scales = [
-        [clip_loss_fn,              args.clip_scale],
-        [blue_loss_fn,              args.blue_scale],
-        [mean_loss_fn,              args.mean_scale],
-        [exposure_loss_fn,          args.exposure_scale],
-        [var_loss_fn,               args.var_scale],
-        [mse_loss_fn,               args.init_mse_scale],
-        [color_loss_fn,             args.colormatch_scale],
-        [aesthetics_loss_fn,        args.aesthetics_scale]
-    ]
-
-    # Conditioning gradients not implemented for ddim or PLMS
-    assert not( any([cond_fs[1]!=0 for cond_fs in loss_fns_scales]) and (args.sampler in ["ddim","plms"]) ), "Conditioning gradients not implemented for ddim or plms. Please use a different sampler."
-
-    callback = SamplerCallback(args=args,
-                            root=root,
-                            mask=mask, 
-                            init_latent=init_latent,
-                            sigmas=k_sigmas,
-                            sampler=sampler,
-                            verbose=False).callback 
-
-    clamp_fn = threshold_by(threshold=args.clamp_grad_threshold, threshold_type=args.grad_threshold_type, clamp_schedule=args.clamp_schedule)
-
-    grad_inject_timing_fn = make_inject_timing_fn(args.grad_inject_timing, model_wrap, args.steps)
-
-    cfg_model = CFGDenoiserWithGrad(model_wrap, 
-                                    loss_fns_scales, 
-                                    clamp_fn, 
-                                    args.gradient_wrt, 
-                                    args.gradient_add_to, 
-                                    args.cond_uncond_sync,
-                                    decode_method=args.decode_method,
-                                    grad_inject_timing_fn=grad_inject_timing_fn, # option to use grad in only a few of the steps
-                                    grad_consolidate_fn=None, # function to add grad to image fn(img, grad, sigma)
-                                    verbose=False)
+    # Optional pixel-space overlay: preserve unmasked regions of the init.
+    if mask_pil is not None and getattr(args, "overlay_mask", False):
+        images = [_apply_overlay_mask(im, init_pil, mask_pil, args) for im in images]
 
     results = []
-    with torch.no_grad():
-        with precision_scope("cuda"):
-            with root.model.ema_scope():
-                for cond_prompts, uncond_prompts in zip(cond_data,uncond_data):
-
-                    if isinstance(cond_prompts, tuple):
-                        cond_prompts = list(cond_prompts)
-                    if isinstance(uncond_prompts, tuple):
-                        uncond_prompts = list(uncond_prompts)
-
-                    uc = root.model.get_learned_conditioning(uncond_prompts)
-                    c = root.model.get_learned_conditioning(cond_prompts)
-
-                    if args.scale == 1.0:
-                        uc = None
-                    if args.init_c != None:
-                        c = args.init_c
-
-                    if args.sampler in ["klms","dpm2","dpm2_ancestral","heun","euler","euler_ancestral", "dpm_fast", "dpm_adaptive", "dpmpp_2s_a", "dpmpp_2m"]:
-                        samples = sampler_fn(
-                            c=c, 
-                            uc=uc, 
-                            args=args, 
-                            model_wrap=cfg_model, 
-                            init_latent=init_latent, 
-                            t_enc=t_enc, 
-                            device=root.device, 
-                            cb=callback,
-                            verbose=False)
-                    elif args.sampler in ['plms','ddim']:
-                        if init_latent is not None and args.strength > 0:
-                            z_enc = sampler.stochastic_encode(init_latent, torch.tensor([t_enc]*batch_size).to(root.device))
-                            samples = sampler.decode(z_enc, c, t_enc, unconditional_guidance_scale=args.scale,
-                                                 unconditional_conditioning=uc)
-                        else:
-                            z_enc = torch.randn([args.n_samples, args.C, args.H // args.f, args.W // args.f], device=root.device)
-                            shape = [args.C, args.H // args.f, args.W // args.f]
-                            samples, _ = sampler.sample(S=args.steps,
-                                                            conditioning=c,
-                                                            batch_size=args.n_samples,
-                                                            shape=shape,
-                                                            verbose=False,
-                                                            unconditional_guidance_scale=args.scale,
-                                                            unconditional_conditioning=uc,
-                                                            eta=args.ddim_eta,
-                                                            x_T=z_enc,
-                                                            img_callback=callback)
-                    else:
-                        raise Exception(f"Sampler {args.sampler} not recognised.")
-
-                    
-                    if return_latent:
-                        results.append(samples.clone())
-
-                    x_samples = root.model.decode_first_stage(samples)
-
-                    if args.use_mask and args.overlay_mask:
-                        # Overlay the masked image after the image is generated
-                        if args.init_sample_raw is not None:
-                            img_original = args.init_sample_raw
-                        elif init_image is not None:
-                            img_original = init_image
-                        else:
-                            raise Exception("Cannot overlay the masked image without an init image to overlay")
-
-                        if args.mask_sample is None or args.using_vid_init:
-                            args.mask_sample = prepare_overlay_mask(args, root, img_original.shape)
-
-                        x_samples = img_original * args.mask_sample + x_samples * ((args.mask_sample * -1.0) + 1)
-
-                    if return_sample:
-                        results.append(x_samples.clone())
-
-                    x_samples = torch.clamp((x_samples + 1.0) / 2.0, min=0.0, max=1.0)
-
-                    if return_c:
-                        results.append(c.clone())
-
-                    for x_sample in x_samples:
-                        def uint_number(datum, number):
-                            if number == 8:
-                                datum = Image.fromarray(datum.astype(np.uint8))
-                            elif number == 32:
-                                datum = datum.astype(np.float32)
-                            else:
-                                datum = datum.astype(np.uint16)
-                            return datum
-                        if args.bit_depth_output == 8:
-                            exponent_for_rearrange = 1
-                        elif args.bit_depth_output == 32:
-                            exponent_for_rearrange = 0
-                        else:
-                            exponent_for_rearrange = 2
-                        x_sample = 255.**exponent_for_rearrange * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
-                        image = uint_number(x_sample, args.bit_depth_output)
-                        results.append(image)
+    if return_sample:
+        # Batched [B,3,H,W] sample tensor for the render loop's next-frame warp.
+        results.append(torch.cat([_pil_to_sample(im) for im in images], dim=0))
+    results.extend(images)
     return results
