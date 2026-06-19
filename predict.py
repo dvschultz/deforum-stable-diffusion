@@ -10,61 +10,35 @@ import random
 from collections import OrderedDict
 from types import SimpleNamespace
 from cog import BasePredictor, Input, Path
-from omegaconf import OmegaConf
 
 sys.path.insert(0, "src")
 import clip
 
-from ldm.util import instantiate_from_config
 from helpers.render import (
     render_animation,
     render_input_video,
     render_image_batch,
     render_interpolation,
 )
-from helpers.model_load import (
-    make_linear_decode,
-)
 from helpers.aesthetics import load_aesthetics_model
 from helpers.prompts import Prompts
-
-
-MODEL_CACHE = "diffusion_models_cache"
+from helpers.zimage_client import (
+    resolve_fal_key,
+    ENDPOINT_TXT2IMG,
+    ENDPOINT_IMG2IMG,
+    ENDPOINT_INPAINT,
+)
 
 
 class Predictor(BasePredictor):
     def setup(self):
-        """Load the model into memory to make running multiple predictions efficient"""
-        # Load the default model in setup()
-        self.default_ckpt = "Protogen_V2.2.ckpt"
-        default_model_ckpt_config_path = "configs/v1-inference.yaml"
-        default_model_ckpt_path = os.path.join(MODEL_CACHE, self.default_ckpt)
-        local_config = OmegaConf.load(default_model_ckpt_config_path)
-
-        self.default_model = load_model_from_config(
-            local_config, default_model_ckpt_path, map_location="cuda"
-        )
-        self.device = "cuda"
-        self.default_model = self.default_model.to(self.device)
+        """Validate fal.ai auth once. Generation runs on the hosted Z-Image Turbo
+        model, so there are no local weights to load."""
+        resolve_fal_key()
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
     def predict(
         self,
-        model_checkpoint: str = Input(
-            choices=[
-                "v2-1_768-ema-pruned.ckpt",
-                "v2-1_512-ema-pruned.ckpt",
-                "768-v-ema.ckpt",
-                "512-base-ema.ckpt",
-                "Protogen_V2.2.ckpt",
-                "v1-5-pruned.ckpt",
-                "v1-5-pruned-emaonly.ckpt",
-                "sd-v1-4.ckpt",
-                "robo-diffusion-v1.ckpt",
-                "wd-v1-3-float16.ckpt",
-            ],
-            description="Choose stable diffusion model.",
-            default="Protogen_V2.2.ckpt",
-        ),
         max_frames: int = Input(
             description="Number of frames for animation", default=200
         ),
@@ -285,31 +259,17 @@ class Predictor(BasePredictor):
                 animation_prompts_dict[int(frame_id)] = prompt
             animation_prompts = OrderedDict(sorted(animation_prompts_dict.items()))
 
-        root = {"device": "cuda", "models_path": "models", "configs_path": "configs"}
-        if model_checkpoint == self.default_ckpt:
-            root["model"] = self.default_model
-        else:
-            # re-load model
-            model_config = (
-                "v2-inference.yaml"
-                if model_checkpoint
-                in ["v2-1_768-ema-pruned.ckpt", "v2-1_512-ema-pruned.ckpt"]
-                else "v1-inference.yaml"
-            )
-            ckpt_config_path = f"configs/{model_config}"
-            ckpt_path = os.path.join(MODEL_CACHE, model_checkpoint)
-            local_config = OmegaConf.load(ckpt_config_path)
-
-            model = load_model_from_config(local_config, ckpt_path, map_location="cuda")
-            model.to(self.device)
-            root["model"] = model
-
-        root = SimpleNamespace(**root)
-
-        autoencoder_version = (
-            "sd-v1"  # TODO this will be different for different models
+        root = {"device": self.device, "models_path": "models", "configs_path": "configs"}
+        # No local weights: root.model is a lightweight Z-Image Turbo handle.
+        root["model"] = SimpleNamespace(
+            backend="z-image-turbo",
+            endpoints={
+                "txt2img": ENDPOINT_TXT2IMG,
+                "img2img": ENDPOINT_IMG2IMG,
+                "inpaint": ENDPOINT_INPAINT,
+            },
         )
-        root.model.linear_decode = make_linear_decode(autoencoder_version, self.device)
+        root = SimpleNamespace(**root)
 
         # using some of the default settings for simplicity
         args_dict = {
@@ -566,35 +526,3 @@ class Predictor(BasePredictor):
             raise RuntimeError(stderr)
 
         return Path(mp4_path)
-
-
-def load_model_from_config(
-    config, ckpt, verbose=False, device="cuda", print_flag=False, map_location="cuda"
-):
-    print(f"..loading model")
-    _, extension = os.path.splitext(ckpt)
-    if extension.lower() == ".safetensors":
-        import safetensors.torch
-
-        pl_sd = safetensors.torch.load_file(ckpt, device=map_location)
-    else:
-        pl_sd = torch.load(ckpt, map_location=map_location)
-    try:
-        sd = pl_sd["state_dict"]
-    except:
-        sd = pl_sd
-    torch.set_default_dtype(torch.float16)
-    model = instantiate_from_config(config.model)
-    torch.set_default_dtype(torch.float32)
-    m, u = model.load_state_dict(sd, strict=False)
-    if print_flag:
-        if len(m) > 0 and verbose:
-            print("missing keys:")
-            print(m)
-        if len(u) > 0 and verbose:
-            print("unexpected keys:")
-            print(u)
-
-    model = model.half().to(device)
-    model.eval()
-    return model
