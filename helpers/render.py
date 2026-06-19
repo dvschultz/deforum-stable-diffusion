@@ -20,7 +20,6 @@ from .colors import maintain_colors
 from .load_images import prepare_overlay_mask
 from .hybrid_video import hybrid_generation, hybrid_composite
 from .hybrid_video import get_matrix_for_hybrid_motion, get_matrix_for_hybrid_motion_prev, get_flow_for_hybrid_motion, get_flow_for_hybrid_motion_prev, image_transform_ransac, image_transform_optical_flow
-from .interpolation import interpolate
 
 try:
     from numpngw import write_png
@@ -566,109 +565,64 @@ def render_interpolation(root, anim_args, args, cond_prompts, uncond_prompts):
     with open(settings_filename, "w+", encoding="utf-8") as f:
         s = {**dict(args.__dict__), **dict(anim_args.__dict__)}
         json.dump(s, f, ensure_ascii=False, indent=4)
-    
+
     # Interpolation Settings
     args.n_samples = 1
     args.seed_behavior = 'fixed' # force fix seed at the moment bc only 1 seed is available
-    prompts_c_s = [] # cache all the text embeddings
 
-    print(f"Preparing for interpolation of the following...")
-
+    # Z-Image Turbo exposes no text embeddings, so interpolation runs in pixel
+    # space: render one image per key prompt, then cross-dissolve between
+    # consecutive keys. (The SD-era embedding slerp is not reproducible via the
+    # hosted API; this is the documented substitute.)
+    key_images = []
+    print(f"Rendering key frames for interpolation...")
     for i, prompt in cond_prompts.items():
-        
         args.cond_prompt = prompt
         args.clip_prompt = args.cond_prompt
-
-        # sample the diffusion model
-        results = generate(args, root, return_c=True)
-        c, image = results[0], results[1]
-        prompts_c_s.append(c) 
-      
-        # Convert image to 8bpc to display
-        if args.bit_depth_output != 8: 
-            image = convert_image_to_8bpc(image, args.bit_depth_output) 
-      
-        # display.clear_output(wait=True)
+        args.use_init = False
+        args.init_sample = None
+        results = generate(args, root)
+        image = results[0]
+        key_images.append(image)
+        if args.bit_depth_output != 8:
+            image = convert_image_to_8bpc(image, args.bit_depth_output)
         display.display(image)
-      
         args.seed = next_seed(args)
 
     display.clear_output(wait=True)
     print(f"Interpolation start...")
 
+    def _save_and_show(image, idx):
+        filename = f"{args.timestring}_{idx:05}.png"
+        save_8_16_or_32bpc_image(image, args.outdir, filename, args.bit_depth_output)
+        disp = convert_image_to_8bpc(image, args.bit_depth_output) if args.bit_depth_output != 8 else image
+        display.clear_output(wait=True)
+        display.display(disp)
+
+    def _blend(a, b, t):
+        return Image.blend(a.convert("RGB"), b.convert("RGB"), t)
+
     frame_idx = 0
 
     if anim_args.interpolate_key_frames:
-        for i in range(len(prompts_c_s)-1):
-            dist_frames = list(cond_prompts.items())[i+1][0] - list(cond_prompts.items())[i][0]
+        key_list = list(cond_prompts.items())
+        for i in range(len(key_images) - 1):
+            dist_frames = key_list[i + 1][0] - key_list[i][0]
             if dist_frames <= 0:
                 print("key frames duplicated or reversed. interpolation skipped.")
                 return
-        else:
             for j in range(dist_frames):
-                # interpolate the text embedding
-                prompt1_c = prompts_c_s[i]
-                prompt2_c = prompts_c_s[i+1]
                 t = j * 1.0 / dist_frames
-                args.init_c = interpolate(t, prompt1_c, prompt2_c, mode="slerp")
-
-                # sample the diffusion model
-                results = generate(args, root)
-                image = results[0]
-
-                filename = f"{args.timestring}_{frame_idx:05}.png"
-                # Save image to 8bpc or 16bpc
-                save_8_16_or_32bpc_image(image, args.outdir, filename, args.bit_depth_output)
+                _save_and_show(_blend(key_images[i], key_images[i + 1], t), frame_idx)
                 frame_idx += 1
-
-                # Convert image to 8bpc to display
-                if args.bit_depth_output != 8: 
-                    image = convert_image_to_8bpc(image, args.bit_depth_output) 
-
-                display.clear_output(wait=True)
-                display.display(image)
-
-                args.seed = next_seed(args)
-
     else:
-        for i in range(len(prompts_c_s)-1):
-            for j in range(anim_args.interpolate_x_frames+1):
-                # interpolate the text embedding
-                prompt1_c = prompts_c_s[i]
-                prompt2_c = prompts_c_s[i+1]  
-                args.init_c = prompt1_c.add(prompt2_c.sub(prompt1_c).mul(j * 1/(anim_args.interpolate_x_frames+1)))
-
-                # sample the diffusion model
-                results = generate(args, root)
-                image = results[0]
-
-                filename = f"{args.timestring}_{frame_idx:05}.png"
-                save_8_16_or_32bpc_image(image, args.outdir, filename, args.bit_depth_output)
+        steps = anim_args.interpolate_x_frames + 1
+        for i in range(len(key_images) - 1):
+            for j in range(steps):
+                t = j * 1.0 / steps
+                _save_and_show(_blend(key_images[i], key_images[i + 1], t), frame_idx)
                 frame_idx += 1
 
-                # Convert image to 8bpc to display
-                if args.bit_depth_output != 8: 
-                    image = convert_image_to_8bpc(image, args.bit_depth_output) 
-
-                display.clear_output(wait=True)
-                display.display(image)
-
-                args.seed = next_seed(args)
-
-    # generate the last prompt
-    args.init_c = prompts_c_s[-1]
-    results = generate(args, root)
-    image = results[0]
-    filename = f"{args.timestring}_{frame_idx:05}.png"
-    save_8_16_or_32bpc_image(image, args.outdir, filename, args.bit_depth_output)
-
-    # Convert image to 8bpc to display
-    if args.bit_depth_output != 8: 
-        image = convert_image_to_8bpc(image, args.bit_depth_output) 
-
-    display.clear_output(wait=True)
-    display.display(image)
+    # final key frame
+    _save_and_show(key_images[-1], frame_idx)
     args.seed = next_seed(args)
-
-    #clear init_c
-    args.init_c = None
