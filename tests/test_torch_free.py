@@ -20,6 +20,9 @@ def test_2d_path_imports_without_torch():
         "import helpers.zimage_client, helpers.generate, helpers.animation\n"
         "import helpers.load_images, helpers.save_images, helpers.colors\n"
         "import helpers.prompt, helpers.prompts, helpers.hybrid_video, helpers.settings\n"
+        # backends + model_load are on the fal path (entry script imports load_model);
+        # they must import torch-free. zimage_local is NOT imported here (it's local-only).
+        "import helpers.backends, helpers.model_load\n"
         "print('TORCH_FREE_OK')\n"
     )
     r = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)

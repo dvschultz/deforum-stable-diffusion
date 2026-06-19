@@ -53,11 +53,15 @@ class Predictor(BasePredictor):
             choices=[128, 256, 384, 448, 512, 576, 640, 704, 768, 832, 896, 960, 1024],
             default=512,
         ),
+        backend: str = Input(
+            description="Generation backend: fal (hosted, default) or local (experimental, needs GPU + weights)",
+            default="fal", choices=["fal", "local"],
+        ),
         num_inference_steps: int = Input(
-            description="Number of inference steps (Z-Image Turbo: 1-8)", ge=1, le=8, default=8
+            description="Inference steps (fal: 1-8; local allows more)", ge=1, le=100, default=8
         ),
         acceleration: str = Input(
-            description="Z-Image Turbo acceleration", default="regular",
+            description="Z-Image Turbo acceleration (fal only)", default="regular",
             choices=["none", "regular", "high"],
         ),
         seed: int = Input(
@@ -226,9 +230,10 @@ class Predictor(BasePredictor):
                 animation_prompts_dict[int(frame_id)] = prompt
             animation_prompts = OrderedDict(sorted(animation_prompts_dict.items()))
 
-        root = {"device": self.device, "models_path": "models", "configs_path": "configs"}
-        # No local weights: root.model is a lightweight Z-Image Turbo handle.
-        root["model"] = SimpleNamespace(backend="z-image-turbo")
+        root = {"device": self.device, "models_path": "models", "configs_path": "configs",
+                "backend": backend}
+        # Lightweight handle; generate() routes via root.backend (fal default | local).
+        root["model"] = SimpleNamespace(backend=backend)
         root = SimpleNamespace(**root)
 
         # using some of the default settings for simplicity

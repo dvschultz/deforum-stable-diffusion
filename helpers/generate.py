@@ -24,6 +24,7 @@ from PIL import Image, ImageOps, ImageFilter
 # Local application/library specific imports
 from .animation import sample_from_cv2, sample_to_cv2
 from . import zimage_client as zc
+from .backends import resolve_backend
 
 
 def add_noise(sample: np.ndarray, noise_amt: float) -> np.ndarray:
@@ -110,7 +111,16 @@ def generate(args, root, frame=0, return_latent=False, return_sample=False, retu
     n_samples = int(getattr(args, "n_samples", 1) or 1)
     steps = getattr(args, "steps", zc.MAX_STEPS)
     seed = getattr(args, "seed", None)
-    acceleration = getattr(args, "acceleration", "regular")
+
+    # Backend resolution (fal default, local opt-in). Each backend takes the common
+    # kwargs and ignores the ones it doesn't use (acceleration is fal-only;
+    # guidance_scale is local-only).
+    backend = resolve_backend(root)
+    common = dict(
+        seed=seed, steps=steps, num_images=n_samples,
+        acceleration=getattr(args, "acceleration", "regular"),
+        guidance_scale=getattr(args, "guidance_scale", 5.0),
+    )
 
     init_pil = _load_init_pil(args)
     has_init = init_pil is not None
@@ -123,21 +133,18 @@ def generate(args, root, frame=0, return_latent=False, return_sample=False, retu
 
     # Route by request shape (KTD-3).
     if mask_pil is not None:
-        images = zc.inpaint(prompt, init_pil, mask_pil, args.strength, args.W, args.H,
-                            seed=seed, steps=steps, num_images=n_samples, acceleration=acceleration)
+        images = backend.inpaint(prompt, init_pil, mask_pil, args.strength, args.W, args.H, **common)
     elif has_init and args.strength > 0:
-        images = zc.img2img(prompt, init_pil, args.strength, args.W, args.H,
-                            seed=seed, steps=steps, num_images=n_samples, acceleration=acceleration)
+        images = backend.img2img(prompt, init_pil, args.strength, args.W, args.H, **common)
     else:
-        images = zc.txt2img(prompt, args.W, args.H,
-                            seed=seed, steps=steps, num_images=n_samples, acceleration=acceleration)
+        images = backend.txt2img(prompt, args.W, args.H, **common)
 
-    # Fail loudly if the API returned nothing (quota/content-filter/schema change),
+    # Fail loudly if the backend returned nothing (quota/content-filter/schema change),
     # rather than crashing later in np.concatenate or the render loop's tuple unpack.
     if not images:
         raise RuntimeError(
-            f"Z-Image Turbo returned no images (prompt={prompt!r}). "
-            "Check your fal.ai quota and the endpoint response."
+            f"Z-Image returned no images (prompt={prompt!r}). "
+            "Check your backend (fal.ai quota, or local pipeline/weights)."
         )
 
     # image_size is a request hint, not a guarantee: normalize every result to the

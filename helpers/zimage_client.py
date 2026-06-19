@@ -207,14 +207,17 @@ def _base_arguments(prompt, W, H, seed, steps, num_images, acceleration):
     return args
 
 
-def txt2img(prompt, W, H, seed=None, steps=MAX_STEPS, num_images=1, acceleration="regular"):
-    """Text-to-image. Returns a list of PIL images (length == num_images)."""
+def txt2img(prompt, W, H, seed=None, steps=MAX_STEPS, num_images=1, acceleration="regular", **_ignored):
+    """Text-to-image. Returns a list of PIL images (length == num_images).
+
+    Accepts and ignores local-backend-only kwargs (e.g. guidance_scale) so the
+    generate() adapter can pass one common kwarg set to either backend."""
     arguments = _base_arguments(prompt, W, H, seed, steps, num_images, acceleration)
     return _result_to_images(_submit(ENDPOINT_TXT2IMG, arguments))
 
 
 def img2img(prompt, init_image, deforum_strength, W, H, seed=None, steps=MAX_STEPS,
-            num_images=1, acceleration="regular"):
+            num_images=1, acceleration="regular", **_ignored):
     """Image-to-image from a PIL init image. `deforum_strength` uses Deforum's
     convention and is inverted internally for fal. Returns a list of PIL images."""
     arguments = _base_arguments(prompt, W, H, seed, steps, num_images, acceleration)
@@ -224,7 +227,7 @@ def img2img(prompt, init_image, deforum_strength, W, H, seed=None, steps=MAX_STE
 
 
 def inpaint(prompt, init_image, mask_image, deforum_strength, W, H, seed=None,
-            steps=MAX_STEPS, num_images=1, acceleration="regular"):
+            steps=MAX_STEPS, num_images=1, acceleration="regular", **_ignored):
     """Masked generation via the inpaint endpoint. White areas of the mask change.
     Returns a list of PIL images."""
     arguments = _base_arguments(prompt, W, H, seed, steps, num_images, acceleration)

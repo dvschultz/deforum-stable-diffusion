@@ -134,6 +134,9 @@ root.models_path, root.output_path = get_model_output_paths(root)
 #@markdown checkpoint is downloaded; the FAL_KEY set above is used for auth.
 
 def ModelSetup():
+    #@markdown `backend`: "fal" (default, hosted, no GPU) or "local" (experimental,
+    #@markdown needs a CUDA GPU + `--with-local` install + Z-Image weights).
+    backend = "fal" #@param ["fal", "local"]
     map_location = "cuda" #@param ["cpu", "cuda"]
     acceleration = "regular" #@param ["none", "regular", "high"]
     return locals()
