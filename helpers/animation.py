@@ -289,7 +289,6 @@ class DeformAnimKeys():
         self.noise_schedule_series = get_inbetweens(parse_key_frames(anim_args.noise_schedule), anim_args.max_frames)
         self.strength_schedule_series = get_inbetweens(parse_key_frames(anim_args.strength_schedule), anim_args.max_frames)
         self.contrast_schedule_series = get_inbetweens(parse_key_frames(anim_args.contrast_schedule), anim_args.max_frames)
-        self.sampler_schedule_series = get_inbetweens(parse_key_frames(anim_args.sampler_schedule), anim_args.max_frames, is_single_string = True)
         self.kernel_schedule_series = get_inbetweens(parse_key_frames(anim_args.kernel_schedule), anim_args.max_frames)
         self.sigma_schedule_series = get_inbetweens(parse_key_frames(anim_args.sigma_schedule), anim_args.max_frames)
         self.amount_schedule_series = get_inbetweens(parse_key_frames(anim_args.amount_schedule), anim_args.max_frames)

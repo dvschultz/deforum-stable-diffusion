@@ -74,14 +74,12 @@ setup_environment()
 
 import torch
 import random
-import clip
 from IPython import display
 from types import SimpleNamespace
 from helpers.save_images import get_output_folder
 from helpers.settings import load_args
 from helpers.render import render_animation, render_input_video, render_image_batch, render_interpolation
 from helpers.model_load import load_model, get_model_output_paths
-from helpers.aesthetics import load_aesthetics_model
 from helpers.prompts import Prompts
 
 # %%
@@ -181,10 +179,6 @@ def DeforumAnimArgs():
     hybrid_comp_mask_auto_contrast_cutoff_high_schedule =  "0:(100)" #@param {type:"string"}
     hybrid_comp_mask_auto_contrast_cutoff_low_schedule =  "0:(0)" #@param {type:"string"}
 
-    #@markdown ####**Sampler Scheduling:**
-    enable_schedule_samplers = False #@param {type:"boolean"}
-    sampler_schedule = "0:('euler'),10:('dpm2'),20:('dpm2_ancestral'),30:('heun'),40:('euler'),50:('euler_ancestral'),60:('dpm_fast'),70:('dpm_adaptive'),80:('dpmpp_2s_a'),90:('dpmpp_2m')" #@param {type:"string"}
-
     #@markdown ####**Unsharp mask (anti-blur) Parameters:**
     kernel_schedule = "0: (5)"#@param {type:"string"}
     sigma_schedule = "0: (1.0)"#@param {type:"string"}
@@ -274,23 +268,17 @@ def DeforumArgs():
     W = 512 #@param
     H = 512 #@param
     W, H = map(lambda x: x - x % 64, (W, H))  # resize to integer multiple of 64
-    bit_depth_output = 8 #@param [8, 16, 32] {type:"raw"}
+    bit_depth_output = 8  # Z-Image Turbo returns 8-bit images
 
     #@markdown **Sampling Settings**
     seed = -1 #@param
-    sampler = 'euler_ancestral' #@param ["klms","dpm2","dpm2_ancestral","heun","euler","euler_ancestral","plms", "ddim", "dpm_fast", "dpm_adaptive", "dpmpp_2s_a", "dpmpp_2m"]
-    steps = 50 #@param
-    scale = 7 #@param
-    ddim_eta = 0.0 #@param
-    dynamic_threshold = None
-    static_threshold = None   
+    steps = 8 #@param {type:"raw"}
+    # steps is clamped to Z-Image Turbo's 1-8 budget by the client.
 
     #@markdown **Save & Display Settings**
     save_samples = True #@param {type:"boolean"}
     save_settings = True #@param {type:"boolean"}
     display_samples = True #@param {type:"boolean"}
-    save_sample_per_step = False #@param {type:"boolean"}
-    show_sample_per_step = False #@param {type:"boolean"}
 
     #@markdown **Batch Settings**
     n_batch = 1 #@param
@@ -300,7 +288,7 @@ def DeforumArgs():
     seed_behavior = "iter" #@param ["iter","fixed","random","ladder","alternate"]
     seed_iter_N = 1 #@param {type:'integer'}
     make_grid = False #@param {type:"boolean"}
-    grid_rows = 2 #@param 
+    grid_rows = 2 #@param
     outdir = get_output_folder(root.output_path, batch_name)
 
     #@markdown **Init Settings**
@@ -308,8 +296,6 @@ def DeforumArgs():
     strength = 0.65 #@param {type:"number"}
     strength_0_no_init = True # Set the strength to 0 automatically when no init image is used
     init_image = "https://cdn.pixabay.com/photo/2022/07/30/13/10/green-longhorn-beetle-7353749_1280.jpg" #@param {type:"string"}
-    add_init_noise = False #@param {type:"boolean"}
-    init_noise = 0.01 #@param
     # Whiter areas of the mask are areas that change more
     use_mask = False #@param {type:"boolean"}
     use_alpha_as_mask = False # use the alpha channel of the init image as the mask
@@ -318,57 +304,19 @@ def DeforumArgs():
     # Adjust mask image, 1.0 is no adjustment. Should be positive numbers.
     mask_brightness_adjust = 1.0  #@param {type:"number"}
     mask_contrast_adjust = 1.0  #@param {type:"number"}
-    # Overlay the masked image at the end of the generation so it does not get degraded by encoding and decoding
+    # Overlay the original under unmasked regions after generation (inpaint endpoint)
     overlay_mask = True  # {type:"boolean"}
     # Blur edges of final overlay mask, if used. Minimum = 0 (no blur)
     mask_overlay_blur = 5 # {type:"number"}
 
-    #@markdown **Exposure/Contrast Conditional Settings**
-    mean_scale = 0 #@param {type:"number"}
-    var_scale = 0 #@param {type:"number"}
-    exposure_scale = 0 #@param {type:"number"}
-    exposure_target = 0.5 #@param {type:"number"}
-
-    #@markdown **Color Match Conditional Settings**
-    colormatch_scale = 0 #@param {type:"number"}
-    colormatch_image = "https://www.saasdesign.io/wp-content/uploads/2021/02/palette-3-min-980x588.png" #@param {type:"string"}
-    colormatch_n_colors = 4 #@param {type:"number"}
-    ignore_sat_weight = 0 #@param {type:"number"}
-
-    #@markdown **CLIP\Aesthetics Conditional Settings**
-    clip_name = 'ViT-L/14' #@param ['ViT-L/14', 'ViT-L/14@336px', 'ViT-B/16', 'ViT-B/32']
-    clip_scale = 0 #@param {type:"number"}
-    aesthetics_scale = 0 #@param {type:"number"}
-    cutn = 1 #@param {type:"number"}
-    cut_pow = 0.0001 #@param {type:"number"}
-
-    #@markdown **Other Conditional Settings**
-    init_mse_scale = 0 #@param {type:"number"}
-    init_mse_image = "https://cdn.pixabay.com/photo/2022/07/30/13/10/green-longhorn-beetle-7353749_1280.jpg" #@param {type:"string"}
-    blue_scale = 0 #@param {type:"number"}
-    
-    #@markdown **Conditional Gradient Settings**
-    gradient_wrt = 'x0_pred' #@param ["x", "x0_pred"]
-    gradient_add_to = 'both' #@param ["cond", "uncond", "both"]
-    decode_method = 'linear' #@param ["autoencoder","linear"]
-    grad_threshold_type = 'dynamic' #@param ["dynamic", "static", "mean", "schedule"]
-    clamp_grad_threshold = 0.2 #@param {type:"number"}
-    clamp_start = 0.2 #@param
-    clamp_stop = 0.01 #@param
-    grad_inject_timing = list(range(1,10)) #@param
-
-    #@markdown **Speed vs VRAM Settings**
-    cond_uncond_sync = True #@param {type:"boolean"}
-    precision = 'autocast' 
-    C = 4
-    f = 8
+    # Z-Image Turbo (fal.ai) acceleration, chosen in Model Setup.
+    acceleration = getattr(root, "acceleration", "regular")
 
     cond_prompt = ""
     cond_prompts = ""
     uncond_prompt = ""
     uncond_prompts = ""
     timestring = ""
-    init_latent = None
     init_sample = None
     init_sample_raw = None
     mask_sample = None
@@ -389,21 +337,10 @@ anim_args = SimpleNamespace(**anim_args_dict)
 args.timestring = time.strftime('%Y%m%d%H%M%S')
 args.strength = max(0.0, min(1.0, args.strength))
 
-# Load clip model if using clip guidance
-if (args.clip_scale > 0) or (args.aesthetics_scale > 0):
-    root.clip_model = clip.load(args.clip_name, jit=False)[0].eval().requires_grad_(False).to(root.device)
-    if (args.aesthetics_scale > 0):
-        root.aesthetics_model = load_aesthetics_model(args, root)
-
 if args.seed == -1:
     args.seed = random.randint(0, 2**32 - 1)
 if not args.use_init:
     args.init_image = None
-if args.sampler == 'plms' and (args.use_init or anim_args.animation_mode != 'None'):
-    print(f"Init images aren't supported with PLMS yet, switching to KLMS")
-    args.sampler = 'klms'
-if args.sampler != 'ddim':
-    args.ddim_eta = 0
 
 if anim_args.animation_mode == 'None':
     anim_args.max_frames = 1

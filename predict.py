@@ -12,7 +12,6 @@ from types import SimpleNamespace
 from cog import BasePredictor, Input, Path
 
 sys.path.insert(0, "src")
-import clip
 
 from helpers.render import (
     render_animation,
@@ -20,7 +19,6 @@ from helpers.render import (
     render_image_batch,
     render_interpolation,
 )
-from helpers.aesthetics import load_aesthetics_model
 from helpers.prompts import Prompts
 from helpers.zimage_client import (
     resolve_fal_key,
@@ -61,38 +59,17 @@ class Predictor(BasePredictor):
             default=512,
         ),
         num_inference_steps: int = Input(
-            description="Number of denoising steps", ge=1, le=500, default=50
+            description="Number of inference steps (Z-Image Turbo: 1-8)", ge=1, le=8, default=8
         ),
-        guidance_scale: float = Input(
-            description="Scale for classifier-free guidance", ge=1, le=20, default=7
-        ),
-        sampler: str = Input(
-            default="euler_ancestral",
-            choices=[
-                "klms",
-                "dpm2",
-                "dpm2_ancestral",
-                "heun",
-                "euler",
-                "euler_ancestral",
-                "plms",
-                "ddim",
-                "dpm_fast",
-                "dpm_adaptive",
-                "dpmpp_2s_a",
-                "dpmpp_2m",
-            ],
+        acceleration: str = Input(
+            description="Z-Image Turbo acceleration", default="regular",
+            choices=["none", "regular", "high"],
         ),
         seed: int = Input(
             description="Random seed. Leave blank to randomize the seed", default=None
         ),
         fps: int = Input(
             default=15, ge=10, le=60, description="Choose fps for the video."
-        ),
-        clip_name: str = Input(
-            choices=["ViT-L/14", "ViT-L/14@336px", "ViT-B/16", "ViT-B/32"],
-            description="Choose CLIP model",
-            default="ViT-L/14",
         ),
         use_init: bool = Input(
             default=False,
@@ -158,11 +135,6 @@ class Predictor(BasePredictor):
         hybrid_video_comp_mask_auto_contrast_cutoff_low_schedule: str = Input(
             default="0:(0)"
         ),
-
-        enable_schedule_samplers: bool = Input(default=False),
-        sampler_schedule:   str = Input(
-            default="0:('euler'),10:('dpm2'),20:('dpm2_ancestral'),30:('heun'),40:('euler'),50:('euler_ancestral'),60:('dpm_fast'),70:('dpm_adaptive'),80:('dpmpp_2s_a'),90:('dpmpp_2m')"
-        ),          
 
         kernel_schedule: str = Input(default="0: (5)"),
         sigma_schedule: str = Input(default="0: (1.0)"),
@@ -277,20 +249,11 @@ class Predictor(BasePredictor):
             "H": height,
             "bit_depth_output": 8,
             "seed": seed,
-            "sampler": sampler,
             "steps": num_inference_steps,
-            "scale": guidance_scale,
-            "ddim_eta": 0.0,
-            "dynamic_threshold": None,
-            "static_threshold": None,
+            "acceleration": acceleration,
             "save_samples": False,
             "save_settings": False,
             "display_samples": False,
-            "save_sample_per_step": False,
-            "show_sample_per_step": False,
-            "prompt_weighting": True,
-            "normalize_prompt_weights": True,
-            "log_weighted_subprompts": False,
             "n_batch": 1,
             "batch_name": "StableFun",
             "filename_format": "{timestring}_{index}_{prompt}.png",
@@ -311,38 +274,9 @@ class Predictor(BasePredictor):
             "mask_contrast_adjust": 1.0,
             "overlay_mask": True,
             "mask_overlay_blur": 5,
-            "mean_scale": 0,
-            "var_scale": 0,
-            "exposure_scale": 0,
-            "exposure_target": 0.5,
-            "colormatch_scale": 0,
-            "colormatch_image": "https://www.saasdesign.io/wp-content/uploads/2021/02/palette-3-min-980x588.png",
-            "colormatch_n_colors": 4,
-            "ignore_sat_weight": 0,
-            "clip_name": clip_name,
-            "clip_scale": 0,
-            "aesthetics_scale": 0,
-            "cutn": 1,
-            "cut_pow": 0.0001,
-            "init_mse_scale": 0,
-            "init_mse_image": "https://cdn.pixabay.com/photo/2022/07/30/13/10/green-longhorn-beetle-7353749_1280.jpg",
-            "blue_scale": 0,
-            "gradient_wrt": "x0_pred",
-            "gradient_add_to": "both",
-            "decode_method": "linear",
-            "grad_threshold_type": "dynamic",
-            "clamp_grad_threshold": 0.2,
-            "clamp_start": 0.2,
-            "clamp_stop": 0.01,
-            "grad_inject_timing": [1, 2, 3, 4, 5, 6, 7, 8, 9],
-            "cond_uncond_sync": True,
             "n_samples": 1,
-            "precision": "autocast",
-            "C": 4,
-            "f": 8,
             "prompt": "",
             "timestring": "",
-            "init_latent": None,
             "init_sample": None,
             "init_sample_raw": None,
             "mask_sample": None,
@@ -378,10 +312,6 @@ class Predictor(BasePredictor):
             "hybrid_comp_mask_contrast_schedule": hybrid_video_comp_mask_contrast_schedule,
             "hybrid_comp_mask_auto_contrast_cutoff_high_schedule": hybrid_video_comp_mask_auto_contrast_cutoff_high_schedule,
             "hybrid_comp_mask_auto_contrast_cutoff_low_schedule": hybrid_video_comp_mask_auto_contrast_cutoff_low_schedule,
-
-            #Sampler Scheduling
-            "enable_schedule_samplers":enable_schedule_samplers,
-            "sampler_schedule": sampler_schedule ,
 
             # Unsharp mask (anti-blur) Parmaters
             "kernel_schedule": kernel_schedule,
@@ -444,28 +374,10 @@ class Predictor(BasePredictor):
         args.timestring = time.strftime("%Y%m%d%H%M%S")
         args.strength = max(0.0, min(1.0, args.strength))
 
-        # Load clip model if using clip guidance
-        if (args.clip_scale > 0) or (args.aesthetics_scale > 0):
-            root.clip_model = (
-                clip.load(args.clip_name, jit=False)[0]
-                .eval()
-                .requires_grad_(False)
-                .to(root.device)
-            )
-            if args.aesthetics_scale > 0:
-                root.aesthetics_model = load_aesthetics_model(args, root)
-
         if args.seed is None:
             args.seed = random.randint(0, 2**32 - 1)
         if not args.use_init:
             args.init_image = None
-        if args.sampler == "plms" and (
-            args.use_init or anim_args.animation_mode != "None"
-        ):
-            print(f"Init images aren't supported with PLMS yet, switching to KLMS")
-            args.sampler = "klms"
-        if args.sampler != "ddim":
-            args.ddim_eta = 0
 
         if anim_args.animation_mode == "None":
             anim_args.max_frames = 1
