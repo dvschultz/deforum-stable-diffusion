@@ -18,10 +18,15 @@
 # !!   "cellView": "form",
 # !!   "id": "IJjzzkKlWM_s"
 # !! }}
-#@markdown **NVIDIA GPU**
+#@markdown **GPU info (optional)**
+#@markdown Generation runs on fal.ai, so no local GPU is required. This just prints
+#@markdown NVIDIA info when present and is skipped gracefully on Macs / CPU-only boxes.
 import subprocess, os, sys
-sub_p_res = subprocess.run(['nvidia-smi', '--query-gpu=name,memory.total,memory.free', '--format=csv,noheader'], stdout=subprocess.PIPE).stdout.decode('utf-8')
-print(f"{sub_p_res[:-1]}")
+try:
+    sub_p_res = subprocess.run(['nvidia-smi', '--query-gpu=name,memory.total,memory.free', '--format=csv,noheader'], stdout=subprocess.PIPE).stdout.decode('utf-8')
+    print(f"{sub_p_res[:-1]}")
+except FileNotFoundError:
+    print("no NVIDIA GPU detected (fine -- generation runs on fal.ai)")
 
 # %%
 # !! {"metadata":{
