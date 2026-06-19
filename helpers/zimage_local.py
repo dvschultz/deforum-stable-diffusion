@@ -112,6 +112,26 @@ def _make_step_callback(dynamic_threshold=None, static_threshold=None,
     return callback
 
 
+def _compose_callbacks(callbacks):
+    """Chain callbacks; each may return {'latents': ...} which the next one sees."""
+    callbacks = [c for c in callbacks if c is not None]
+    if not callbacks:
+        return None
+    if len(callbacks) == 1:
+        return callbacks[0]
+
+    def combined(pipe, step, timestep, cbk):
+        merged = {}
+        for c in callbacks:
+            r = c(pipe, step, timestep, cbk) or {}
+            if "latents" in r:
+                cbk = {**cbk, "latents": r["latents"]}
+            merged.update(r)
+        return merged
+
+    return combined
+
+
 def _common_kwargs(W, H, seed, steps, num_images, guidance_scale, output_type, kw_extra):
     kw = dict(
         height=int(H), width=int(W),
@@ -121,7 +141,11 @@ def _common_kwargs(W, H, seed, steps, num_images, guidance_scale, output_type, k
         generator=_generator(seed),
         output_type=output_type,
     )
-    callback = _make_step_callback(**kw_extra)
+    # Compose thresholding/preview (U4) with experimental gradient guidance (U7).
+    callback = _compose_callbacks([
+        _make_step_callback(**kw_extra),
+        kw_extra.get("guidance_callback"),
+    ])
     if callback is not None:
         kw["callback_on_step_end"] = callback
     if kw_extra.get("scheduler") and kw_extra["scheduler"] != "default":

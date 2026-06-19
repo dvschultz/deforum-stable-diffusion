@@ -135,6 +135,13 @@ def generate(args, root, frame=0, return_latent=False, return_sample=False, retu
             outdir=args.outdir, timestring=getattr(args, "timestring", ""),
             scheduler=getattr(args, "scheduler", "default"),
         )
+        # EXPERIMENTAL gradient conditioning guidance (U7), only when a scale is set.
+        _GUIDANCE_SCALES = ("clip_scale", "aesthetics_scale", "colormatch_scale",
+                            "init_mse_scale", "blue_scale", "mean_scale", "var_scale",
+                            "exposure_scale")
+        if any(getattr(args, s, 0) for s in _GUIDANCE_SCALES):
+            from .local_guidance import make_guidance_callback  # lazy: pulls torch + CLIP
+            common["guidance_callback"] = make_guidance_callback(args, root)
 
     init_pil = _load_init_pil(args)
     has_init = init_pil is not None
