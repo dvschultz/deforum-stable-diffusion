@@ -3,6 +3,8 @@
 All fal.ai network interaction (subscribe / upload / download) is mocked, so these
 run without a FAL_KEY or network access.
 """
+import os
+
 import pytest
 from PIL import Image
 
@@ -22,6 +24,8 @@ def test_resolve_fal_key_returns_value(monkeypatch):
 
 def test_resolve_fal_key_raises_when_missing(monkeypatch):
     monkeypatch.delenv("FAL_KEY", raising=False)
+    # Stub .env loading so the test is hermetic regardless of a real local .env.
+    monkeypatch.setattr(zc, "load_dotenv", lambda: None)
     with pytest.raises(RuntimeError) as exc:
         zc.resolve_fal_key()
     assert "FAL_KEY" in str(exc.value)
@@ -194,6 +198,30 @@ def test_acceleration_none_is_omitted(monkeypatch):
 
     zc.txt2img("p", 512, 512, acceleration="high")
     assert captured["arguments"]["acceleration"] == "high"
+
+
+def test_upload_loads_dotenv_before_calling_fal(monkeypatch, tmp_path):
+    # Regression: img2img/inpaint upload before _submit, so a key that lives only
+    # in .env must be resolved inside _upload too (else MissingCredentialsError).
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("FAL_KEY=from-dotenv\n")
+    monkeypatch.setattr(zc, "_dotenv_loaded", False)
+    seen = {}
+
+    def fake_upload(image, format="jpeg"):
+        seen["key_present"] = bool(os.environ.get("FAL_KEY"))
+        seen["format"] = format
+        return "http://uploaded"
+
+    monkeypatch.setattr(zc.fal_client, "upload_image", fake_upload)
+    try:
+        url = zc._upload(_img())
+        assert url == "http://uploaded"
+        assert seen["key_present"] is True  # .env was loaded before the fal call
+        assert seen["format"] == "png"      # uploads as PNG, not lossy JPEG
+    finally:
+        zc._dotenv_loaded = False
 
 
 def test_inpaint_uploads_image_and_mask(monkeypatch):

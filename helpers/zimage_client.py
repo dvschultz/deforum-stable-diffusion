@@ -161,11 +161,16 @@ def _submit(endpoint, arguments, max_retries=4, base_delay=1.0, sleep=time.sleep
 def _upload(image):
     """Upload a PIL image to fal as PNG and return its URL.
 
+    Resolves the key first: uploads happen before _submit in img2img/inpaint, so a
+    key that lives only in .env must be loaded here too -- otherwise fal_client
+    raises MissingCredentialsError before _submit ever runs.
+
     PNG (not the client default of JPEG) matters here: init frames are re-uploaded
     every animation frame, so lossy recompression would compound artifacts and
     degrade coherence, and a JPEG-compressed mask gets soft edges that shift which
     pixels the inpaint endpoint treats as masked.
     """
+    resolve_fal_key()
     return fal_client.upload_image(image, format="png")
 
 
