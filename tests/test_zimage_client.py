@@ -33,6 +33,28 @@ def test_resolve_fal_key_raises_when_blank(monkeypatch):
         zc.resolve_fal_key()
 
 
+def test_resolve_fal_key_reads_dotenv(monkeypatch, tmp_path):
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("# fal key\nexport FAL_KEY='from-dotenv'\n")
+    monkeypatch.setattr(zc, "_dotenv_loaded", False)
+    try:
+        assert zc.resolve_fal_key() == "from-dotenv"
+    finally:
+        zc._dotenv_loaded = False
+
+
+def test_env_var_wins_over_dotenv(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("FAL_KEY=from-dotenv\n")
+    monkeypatch.setenv("FAL_KEY", "from-env")
+    monkeypatch.setattr(zc, "_dotenv_loaded", False)
+    try:
+        assert zc.resolve_fal_key() == "from-env"  # real env var takes precedence
+    finally:
+        zc._dotenv_loaded = False
+
+
 # --- to_fal_strength (the inversion that keeps animation coherent) ---------
 
 def test_to_fal_strength_inverts():

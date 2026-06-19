@@ -44,13 +44,53 @@ CLIENT_TIMEOUT = 300
 # Substrings that mark a non-retryable authentication/authorization failure.
 _AUTH_ERROR_MARKERS = ("401", "403", "unauthorized", "forbidden", "invalid api key", "fal_key")
 
+_dotenv_loaded = False
+
+
+def load_dotenv():
+    """Load KEY=VALUE pairs from a `.env` (cwd, then repo root) into os.environ, once.
+
+    Dependency-free (honors the 'fal-client only' constraint). A real environment
+    variable always wins -- keys already set in os.environ are never overwritten,
+    so `.env` is only a fallback. `export KEY=val` lines and quoted values are
+    tolerated. Missing/unreadable files are ignored.
+    """
+    global _dotenv_loaded
+    if _dotenv_loaded:
+        return
+    _dotenv_loaded = True
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    seen = set()
+    for path in (os.path.join(os.getcwd(), ".env"), os.path.join(repo_root, ".env")):
+        if path in seen or not os.path.isfile(path):
+            continue
+        seen.add(path)
+        try:
+            with open(path) as f:
+                for raw in f:
+                    line = raw.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    if line.startswith("export "):
+                        line = line[len("export "):]
+                    key, _, val = line.partition("=")
+                    key = key.strip()
+                    val = val.strip().strip('"').strip("'")
+                    if key and key not in os.environ:
+                        os.environ[key] = val
+        except OSError:
+            pass
+
 
 def resolve_fal_key():
-    """Return the FAL_KEY from the environment, or raise a clear error.
+    """Return the FAL_KEY from the environment (or a local .env), or raise clearly.
 
     fal-client reads FAL_KEY itself; this exists so a missing key fails loudly at
-    setup time with an actionable message instead of on the first frame.
+    setup time with an actionable message instead of on the first frame. If the key
+    is not already in the environment, a repo-root/cwd `.env` is consulted.
     """
+    if not os.environ.get("FAL_KEY", "").strip():
+        load_dotenv()
     key = os.environ.get("FAL_KEY", "").strip()
     if not key:
         raise RuntimeError(

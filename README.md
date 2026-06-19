@@ -59,8 +59,16 @@ Generation requires a fal.ai API key. Create one at
 export FAL_KEY=your-key-here     # local / CLI
 ```
 
-In the notebook, paste the key into the **fal.ai API Key** cell (or set `FAL_KEY` in the
-environment beforehand). On Replicate, set `FAL_KEY` as a secret. You are billed by fal.ai
+Or copy `.env.example` to `.env` and put your key there — it's loaded automatically and is
+gitignored, so it's never committed (a real `FAL_KEY` environment variable always wins over
+the file):
+
+```
+cp .env.example .env             # then edit FAL_KEY=...
+```
+
+In the notebook, run the **fal.ai API Key** cell to be prompted via getpass (the key is not
+written into the notebook). On Replicate, set `FAL_KEY` as a secret. You are billed by fal.ai
 per image (~$0.005/megapixel), so a long animation makes one metered API call per frame.
 
 ### What maps to what

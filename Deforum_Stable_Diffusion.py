@@ -89,12 +89,14 @@ from helpers.prompts import Prompts
 # !! }}
 #@markdown **fal.ai API Key**
 #@markdown Generation runs on the hosted Z-Image Turbo model via fal.ai.
-#@markdown Set `FAL_KEY` in your environment, or run this cell to be prompted.
-#@markdown (The key is read via getpass and is NOT written into the notebook, so it
-#@markdown can't be committed by accident -- get one at https://fal.ai/dashboard/keys.)
+#@markdown Set `FAL_KEY` in your environment or a local `.env` file, or run this
+#@markdown cell to be prompted. (The key is read via getpass and is NOT written into
+#@markdown the notebook, so it can't be committed -- get one at https://fal.ai/dashboard/keys.)
 import os
 from getpass import getpass
+from helpers.zimage_client import load_dotenv
 
+load_dotenv()  # pick up FAL_KEY from a local .env if present
 if not os.environ.get("FAL_KEY"):
     os.environ["FAL_KEY"] = getpass("Enter your FAL_KEY: ").strip()
 
