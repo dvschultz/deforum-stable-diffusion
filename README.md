@@ -96,6 +96,44 @@ per image (~$0.005/megapixel), so a long animation makes one metered API call pe
 Old saved settings files still load — any removed SD-only keys are simply ignored. The
 Stable Diffusion configs in `configs/*.yaml` are no longer used.
 
+### Local backend (experimental, opt-in)
+
+Everything above describes the default **`fal`** backend. If you have a CUDA GPU you can
+instead run Z-Image Turbo **locally** via the diffusers pipelines and get back the features
+the hosted API can't expose. fal stays the default; local is opt-in twice — by install and
+by flag:
+
+```
+python install_requirements.py --with-local     # torch + diffusers-from-source (large)
+hf download Tongyi-MAI/Z-Image-Turbo             # the 6B weights
+```
+
+Then select it: set `backend = "local"` in the notebook **Model Setup** cell, export
+`DEFORUM_BACKEND=local`, or pass `backend=local` on Replicate. Point `ZIMAGE_LOCAL_PATH` at
+a downloaded weights dir to avoid re-fetching.
+
+What the local backend restores (all **ignored on `fal`**):
+
+| Feature | `fal` (default) | `local` (experimental) |
+|---|---|---|
+| txt2img / img2img / inpaint | ✅ | ✅ |
+| No GPU required | ✅ | ❌ (needs CUDA + 6B weights) |
+| Per-image cost | ~$0.005/MP | free (your GPU) |
+| Steps | clamped 1–8 | unlimited |
+| CFG / `guidance_scale` | — (model-fixed) | ✅ |
+| 16/32-bit output | ❌ (8-bit) | ✅ (local VAE decode) |
+| Per-step previews + thresholding | ❌ | ✅ (`callback_on_step_end`) |
+| Interpolation | pixel cross-dissolve | ✅ embedding slerp (semantic morph) |
+| Gradient guidance (CLIP/aesthetic/colormatch/MSE/exposure) | ❌ | ⚠️ **experimental** |
+
+⚠️ **Gradient guidance is experimental.** Backprop guidance on an 8-step distilled
+flow-matching model may barely move the image; it may need many more steps to matter, or
+may not be effective at all. All conditioning scales default to 0 (off). Treat it as a
+research toggle, not a finished feature.
+
+The local backend pulls torch + diffusers; the default `fal` path stays torch-free. See
+`docs/local-backend-verification.md` for the full GPU validation checklist.
+
 ## Before You Start
 
 Before you start installing and using Deforum Stable Diffusion, there are a few things you need to do:

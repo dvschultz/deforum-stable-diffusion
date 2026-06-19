@@ -73,10 +73,27 @@ THREE_D = [
     "torchaudio",
     "timm",   # MiDaS backbone
 ]
+
+# Optional (EXPERIMENTAL): the local Z-Image backend (backend='local'). Runs the
+# 6B model on your own CUDA GPU instead of fal.ai. Large; needs the weights too:
+#   hf download Tongyi-MAI/Z-Image-Turbo
+# diffusers must be from source -- the ZImage pipelines aren't in a stable release.
+LOCAL = [
+    "torch",
+    "torchvision",
+    "git+https://github.com/huggingface/diffusers.git",
+    "transformers",
+    "accelerate",
+    "huggingface_hub",
+    "safetensors",
+    "sentencepiece",
+    "ftfy",
+    "regex",   # ftfy + the vendored CLIP (used by experimental gradient guidance)
+]
 PYTORCH_INDEX = "https://download.pytorch.org/whl/nightly/cu121"
 
 
-def install_requirements(verbose=False, with_3d=False):
+def install_requirements(verbose=False, with_3d=False, with_local=False):
 
     # Detect System
     os_system = platform.system()
@@ -87,16 +104,25 @@ def install_requirements(verbose=False, with_3d=False):
     if with_3d:
         print("..installing 3D/depth extras (torch stack -- this is large)")
         pip_install_packages(THREE_D, extra_index_url=PYTORCH_INDEX, verbose=verbose, pre=True)
-    else:
+
+    if with_local:
+        print("..installing LOCAL Z-Image backend (EXPERIMENTAL; torch + diffusers-from-source)")
+        pip_install_packages(LOCAL, extra_index_url=PYTORCH_INDEX, verbose=verbose, pre=True)
+        print("..now download the weights:  hf download Tongyi-MAI/Z-Image-Turbo")
+        print("..then run with backend='local' (ModelSetup) or DEFORUM_BACKEND=local")
+
+    if not (with_3d or with_local):
         print("..skipping the torch stack: generation runs on fal.ai (Z-Image Turbo),")
         print("  and 2D animation / image batches need no GPU.")
-        print("  For 3D depth warping or grid previews, re-run with --with-3d")
+        print("  For 3D depth warping: --with-3d   |   for the local backend: --with-local")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--with-3d', action='store_true',
                         help='also install torch + MiDaS/AdaBins deps for 3D depth warping')
+    parser.add_argument('--with-local', action='store_true',
+                        help='also install the EXPERIMENTAL local Z-Image backend (torch + diffusers)')
     parser.add_argument('--verbose', action='store_true', help='print pip install stuff')
     args = parser.parse_args()
-    install_requirements(verbose=args.verbose, with_3d=args.with_3d)
+    install_requirements(verbose=args.verbose, with_3d=args.with_3d, with_local=args.with_local)
