@@ -24,7 +24,7 @@ from PIL import Image, ImageOps, ImageFilter
 # Local application/library specific imports
 from .animation import sample_from_cv2, sample_to_cv2
 from . import zimage_client as zc
-from .backends import resolve_backend
+from .backends import resolve_backend, resolve_backend_name
 
 
 def add_noise(sample: np.ndarray, noise_amt: float) -> np.ndarray:
@@ -114,13 +114,27 @@ def generate(args, root, frame=0, return_latent=False, return_sample=False, retu
 
     # Backend resolution (fal default, local opt-in). Each backend takes the common
     # kwargs and ignores the ones it doesn't use (acceleration is fal-only;
-    # guidance_scale is local-only).
+    # guidance_scale / thresholds / per-step previews are local-only).
     backend = resolve_backend(root)
+    is_local = resolve_backend_name(root) == "local"
+    bit = int(getattr(args, "bit_depth_output", 8) or 8)
+    highbit = is_local and bit in (16, 32)  # true 16/32-bit only on local (VAE decode)
+
     common = dict(
         seed=seed, steps=steps, num_images=n_samples,
         acceleration=getattr(args, "acceleration", "regular"),
         guidance_scale=getattr(args, "guidance_scale", 5.0),
+        output_type=("np" if highbit else "pil"),
     )
+    if is_local:
+        common.update(
+            dynamic_threshold=getattr(args, "dynamic_threshold", None),
+            static_threshold=getattr(args, "static_threshold", None),
+            save_sample_per_step=getattr(args, "save_sample_per_step", False),
+            show_sample_per_step=getattr(args, "show_sample_per_step", False),
+            outdir=args.outdir, timestring=getattr(args, "timestring", ""),
+            scheduler=getattr(args, "scheduler", "default"),
+        )
 
     init_pil = _load_init_pil(args)
     has_init = init_pil is not None
@@ -147,6 +161,9 @@ def generate(args, root, frame=0, return_latent=False, return_sample=False, retu
             "Check your backend (fal.ai quota, or local pipeline/weights)."
         )
 
+    if highbit:
+        return _format_highbit_results(images, args, bit, return_sample)
+
     # image_size is a request hint, not a guarantee: normalize every result to the
     # requested canvas so frame warps, batching (np.concatenate), and ffmpeg
     # assembly never see drifting dimensions.
@@ -162,4 +179,28 @@ def generate(args, root, frame=0, return_latent=False, return_sample=False, retu
         # Batched [B,3,H,W] sample array for the render loop's next-frame warp.
         results.append(np.concatenate([_pil_to_sample(im) for im in images], axis=0))
     results.extend(images)
+    return results
+
+
+def _format_highbit_results(images, args, bit, return_sample):
+    """Local backend, 16/32-bit: backend returns HWC float [0,1] arrays. Produce the
+    bit-depth arrays render's save_8_16_or_32bpc_image expects, plus an 8-bit-derived
+    sample buffer for the warp loop (warping doesn't need the extra bit depth)."""
+    norm = []
+    for a in images:
+        a = np.clip(np.asarray(a, dtype=np.float32), 0.0, 1.0)
+        if a.shape[:2] != (args.H, args.W):
+            pil = Image.fromarray((a * 255).astype(np.uint8)).resize((args.W, args.H), Image.LANCZOS)
+            a = np.asarray(pil, dtype=np.float32) / 255.0
+        norm.append(a)
+
+    results = []
+    if return_sample:
+        samples = [_pil_to_sample(Image.fromarray((a * 255).astype(np.uint8))) for a in norm]
+        results.append(np.concatenate(samples, axis=0))
+    for a in norm:
+        if bit == 16:
+            results.append((a * 65535.0).astype(np.uint16))
+        else:  # 32-bit float (EXR)
+            results.append(a.astype(np.float32))
     return results

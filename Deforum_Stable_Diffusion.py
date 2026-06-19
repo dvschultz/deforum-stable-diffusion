@@ -276,12 +276,13 @@ def DeforumArgs():
     W = 512 #@param
     H = 512 #@param
     W, H = map(lambda x: x - x % 64, (W, H))  # resize to integer multiple of 64
-    bit_depth_output = 8  # Z-Image Turbo returns 8-bit images
+    bit_depth_output = 8 #@param [8, 16, 32] {type:"raw"}
+    # fal returns 8-bit (16/32 forced to 8 below); 16/32 only honored on backend=local.
 
     #@markdown **Sampling Settings**
     seed = -1 #@param
     steps = 8 #@param {type:"raw"}
-    # steps is clamped to Z-Image Turbo's 1-8 budget by the client.
+    # fal clamps steps to 1-8; local allows more.
 
     #@markdown **Save & Display Settings**
     save_samples = True #@param {type:"boolean"}
@@ -320,6 +321,44 @@ def DeforumArgs():
     # Z-Image Turbo (fal.ai) acceleration, chosen in Model Setup.
     acceleration = getattr(root, "acceleration", "regular")
 
+    #@markdown ---
+    #@markdown **Local backend only (experimental, ignored when backend='fal')**
+    #@markdown These drive features that need the diffusion internals a hosted API
+    #@markdown hides: real CFG, deeper steps, per-step previews/thresholding, and
+    #@markdown (experimental) gradient conditioning guidance.
+    guidance_scale = 5.0 #@param {type:"number"}          # CFG; diffusers default 5.0
+    scheduler = "default" #@param {type:"string"}          # diffusers scheduler name, or "default"
+    save_sample_per_step = False #@param {type:"boolean"}  # per-step preview frames
+    show_sample_per_step = False #@param {type:"boolean"}
+    dynamic_threshold = None                                # per-step latent clamp (Imagen-style)
+    static_threshold = None
+    # Gradient conditioning guidance (EXPERIMENTAL on an 8-step DiT; all default 0 = off)
+    clip_scale = 0 #@param {type:"number"}
+    clip_name = 'ViT-L/14' #@param ['ViT-L/14', 'ViT-L/14@336px', 'ViT-B/16', 'ViT-B/32']
+    aesthetics_scale = 0 #@param {type:"number"}
+    colormatch_scale = 0 #@param {type:"number"}
+    colormatch_image = "https://www.saasdesign.io/wp-content/uploads/2021/02/palette-3-min-980x588.png"
+    colormatch_n_colors = 4 #@param {type:"number"}
+    ignore_sat_weight = 0 #@param {type:"number"}
+    init_mse_scale = 0 #@param {type:"number"}
+    init_mse_image = ""
+    blue_scale = 0 #@param {type:"number"}
+    mean_scale = 0 #@param {type:"number"}
+    var_scale = 0 #@param {type:"number"}
+    exposure_scale = 0 #@param {type:"number"}
+    exposure_target = 0.5 #@param {type:"number"}
+    cutn = 1 #@param {type:"number"}
+    cut_pow = 0.0001 #@param {type:"number"}
+    gradient_wrt = 'x0_pred' #@param ["x", "x0_pred"]
+    gradient_add_to = 'both' #@param ["cond", "uncond", "both"]
+    decode_method = 'autoencoder' #@param ["autoencoder", "linear"]
+    grad_threshold_type = 'dynamic' #@param ["dynamic", "static", "mean", "schedule"]
+    clamp_grad_threshold = 0.2 #@param {type:"number"}
+    clamp_start = 0.2 #@param
+    clamp_stop = 0.01 #@param
+    grad_inject_timing = list(range(1, 10)) #@param
+    cond_uncond_sync = True #@param {type:"boolean"}
+
     cond_prompt = ""
     cond_prompts = ""
     uncond_prompt = ""
@@ -344,9 +383,10 @@ anim_args = SimpleNamespace(**anim_args_dict)
 
 args.timestring = time.strftime('%Y%m%d%H%M%S')
 args.strength = max(0.0, min(1.0, args.strength))
-# Z-Image Turbo returns 8-bit images; force 8-bit so a legacy settings file that
-# restores bit_depth_output=16/32 can't crash the save/convert path.
-args.bit_depth_output = 8
+# fal returns 8-bit; force 8 so a legacy 16/32 setting can't crash the save path.
+# The local backend decodes the VAE itself and honors 16/32.
+if getattr(root, "backend", "fal") != "local":
+    args.bit_depth_output = 8
 
 if args.seed == -1:
     args.seed = random.randint(0, 2**32 - 1)

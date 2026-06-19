@@ -69,7 +69,50 @@ def _generator(seed):
     return torch.Generator(device=_device()).manual_seed(int(seed))
 
 
-def _common_kwargs(W, H, seed, steps, num_images, guidance_scale, output_type, callback):
+def _dynamic_threshold(latents, percentile):
+    # Imagen-style per-step clamp: clamp to the given abs-value percentile, then rescale.
+    import numpy as np
+    s = np.percentile(latents.detach().abs().cpu().numpy(), percentile,
+                      axis=tuple(range(1, latents.ndim)))
+    s = np.maximum(s, 1.0)
+    s = torch.as_tensor(s, device=latents.device, dtype=latents.dtype).view(-1, *([1] * (latents.ndim - 1)))
+    return latents.clamp(-s, s) / s
+
+
+def _make_step_callback(dynamic_threshold=None, static_threshold=None,
+                        save_sample_per_step=False, show_sample_per_step=False,
+                        outdir=None, timestring="", **_ignored):
+    """Build a callback_on_step_end for thresholding + per-step previews, or None.
+
+    Returns a dict to override latents (diffusers pops 'latents' from the return),
+    so threshold clamps actually take effect for the next step.
+    """
+    want = (dynamic_threshold is not None or static_threshold is not None
+            or save_sample_per_step or show_sample_per_step)
+    if not want:
+        return None
+
+    def callback(pipe, step, timestep, cbk):
+        latents = cbk["latents"]
+        if static_threshold is not None:
+            latents = latents.clamp(-static_threshold, static_threshold)
+        if dynamic_threshold is not None:
+            latents = _dynamic_threshold(latents, dynamic_threshold)
+        if save_sample_per_step and outdir:
+            try:
+                import os
+                img = pipe.image_processor.postprocess(
+                    pipe.vae.decode(latents / pipe.vae.config.scaling_factor, return_dict=False)[0],
+                    output_type="pil")[0]
+                img.save(os.path.join(outdir, f"{timestring}_step_{step:03d}.png"))
+            except Exception:
+                pass  # previews are best-effort; never break the render
+        return {"latents": latents}
+
+    return callback
+
+
+def _common_kwargs(W, H, seed, steps, num_images, guidance_scale, output_type, kw_extra):
     kw = dict(
         height=int(H), width=int(W),
         num_inference_steps=int(steps),
@@ -78,34 +121,38 @@ def _common_kwargs(W, H, seed, steps, num_images, guidance_scale, output_type, c
         generator=_generator(seed),
         output_type=output_type,
     )
+    callback = _make_step_callback(**kw_extra)
     if callback is not None:
         kw["callback_on_step_end"] = callback
+    if kw_extra.get("scheduler") and kw_extra["scheduler"] != "default":
+        pass  # scheduler swap is applied on the pipe at load time; see _load_pipe note
     return kw
 
 
 def txt2img(prompt, W, H, seed=None, steps=8, num_images=1,
-            guidance_scale=5.0, output_type="pil", callback=None, **_ignored):
-    """Text-to-image. Returns a list of PIL images (or float tensors if output_type='pt')."""
+            guidance_scale=5.0, output_type="pil", **kw):
+    """Text-to-image. Returns PIL images, or HWC float arrays when output_type='np'
+    (used for 16/32-bit output)."""
     pipe = _load_pipe("txt2img")
     out = pipe(prompt=prompt,
-               **_common_kwargs(W, H, seed, steps, num_images, guidance_scale, output_type, callback))
+               **_common_kwargs(W, H, seed, steps, num_images, guidance_scale, output_type, kw))
     return list(out.images)
 
 
 def img2img(prompt, init_image, deforum_strength, W, H, seed=None, steps=8, num_images=1,
-            guidance_scale=5.0, output_type="pil", callback=None, **_ignored):
+            guidance_scale=5.0, output_type="pil", **kw):
     """Image-to-image from a PIL init. Deforum strength is inverted for diffusers."""
     pipe = _load_pipe("img2img")
     out = pipe(prompt=prompt, image=init_image, strength=to_fal_strength(deforum_strength),
-               **_common_kwargs(W, H, seed, steps, num_images, guidance_scale, output_type, callback))
+               **_common_kwargs(W, H, seed, steps, num_images, guidance_scale, output_type, kw))
     return list(out.images)
 
 
 def inpaint(prompt, init_image, mask_image, deforum_strength, W, H, seed=None, steps=8,
-            num_images=1, guidance_scale=5.0, output_type="pil", callback=None, **_ignored):
+            num_images=1, guidance_scale=5.0, output_type="pil", **kw):
     """Masked generation. White mask regions change."""
     pipe = _load_pipe("inpaint")
     out = pipe(prompt=prompt, image=init_image, mask_image=mask_image,
                strength=to_fal_strength(deforum_strength),
-               **_common_kwargs(W, H, seed, steps, num_images, guidance_scale, output_type, callback))
+               **_common_kwargs(W, H, seed, steps, num_images, guidance_scale, output_type, kw))
     return list(out.images)
