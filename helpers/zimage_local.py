@@ -156,3 +156,33 @@ def inpaint(prompt, init_image, mask_image, deforum_strength, W, H, seed=None, s
                strength=to_fal_strength(deforum_strength),
                **_common_kwargs(W, H, seed, steps, num_images, guidance_scale, output_type, kw))
     return list(out.images)
+
+
+# --- Embedding-space interpolation (U5) ----------------------------------
+
+def encode_prompt(prompt):
+    """Return the prompt's text embedding (a list of token tensors, per diffusers)."""
+    pipe = _load_pipe("txt2img")
+    prompt_embeds, _negative = pipe.encode_prompt(prompt, do_classifier_free_guidance=False)
+    return prompt_embeds
+
+
+def slerp_embeds(e1, e2, t):
+    """Slerp two prompt embeddings (lists of token tensors). Token counts can differ
+    between prompts, so each tensor pair is aligned to the shorter length before
+    interpolating -- an approximation; exactness is a GPU-validation item."""
+    from .interpolation import interpolate
+    out = []
+    for a, b in zip(e1, e2):
+        n = min(a.shape[0], b.shape[0])
+        out.append(interpolate(t, a[:n], b[:n], mode="slerp"))
+    return out
+
+
+def txt2img_embeds(prompt_embeds, W, H, seed=None, steps=8, guidance_scale=5.0,
+                   output_type="pil", **kw):
+    """Generate from precomputed (e.g. slerped) prompt embeddings."""
+    pipe = _load_pipe("txt2img")
+    out = pipe(prompt_embeds=prompt_embeds,
+               **_common_kwargs(W, H, seed, steps, 1, guidance_scale, output_type, kw))
+    return list(out.images)

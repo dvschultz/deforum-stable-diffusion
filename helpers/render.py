@@ -571,10 +571,17 @@ def render_interpolation(root, anim_args, args, cond_prompts, uncond_prompts):
     args.n_samples = 1
     args.seed_behavior = 'fixed' # force fix seed at the moment bc only 1 seed is available
 
-    # Z-Image Turbo exposes no text embeddings, so interpolation runs in pixel
-    # space: render one image per key prompt, then cross-dissolve between
-    # consecutive keys. (The SD-era embedding slerp is not reproducible via the
-    # hosted API; this is the documented substitute.)
+    # Backend decides HOW we interpolate:
+    #   local: slerp the text embeddings (true semantic morph) -- prompt_embeds.
+    #   fal:   the hosted API exposes no embeddings, so cross-dissolve rendered
+    #          key frames in pixel space (documented substitute).
+    from .backends import resolve_backend_name
+    is_local = resolve_backend_name(root) == "local"
+    key_embeds = None
+    if is_local:
+        from .zimage_local import encode_prompt, slerp_embeds, txt2img_embeds
+        key_embeds = [encode_prompt(p) for p in cond_prompts.values()]
+
     key_images = []
     print(f"Rendering key frames for interpolation...")
     for i, prompt in cond_prompts.items():
@@ -603,8 +610,14 @@ def render_interpolation(root, anim_args, args, cond_prompts, uncond_prompts):
         display.clear_output(wait=True)
         display.display(disp)
 
-    def _blend(a, b, t):
-        return Image.blend(a.convert("RGB"), b.convert("RGB"), t)
+    def _interp_frame(i, t):
+        # local: generate from slerped embeddings (semantic morph);
+        # fal: cross-dissolve the two rendered key frames (pixel blend).
+        if is_local:
+            emb = slerp_embeds(key_embeds[i], key_embeds[i + 1], t)
+            return txt2img_embeds(emb, args.W, args.H, seed=args.seed, steps=args.steps,
+                                  guidance_scale=getattr(args, "guidance_scale", 5.0))[0]
+        return Image.blend(key_images[i].convert("RGB"), key_images[i + 1].convert("RGB"), t)
 
     frame_idx = 0
 
@@ -616,15 +629,13 @@ def render_interpolation(root, anim_args, args, cond_prompts, uncond_prompts):
                 print("key frames duplicated or reversed. interpolation skipped.")
                 return
             for j in range(dist_frames):
-                t = j * 1.0 / dist_frames
-                _save_and_show(_blend(key_images[i], key_images[i + 1], t), frame_idx)
+                _save_and_show(_interp_frame(i, j * 1.0 / dist_frames), frame_idx)
                 frame_idx += 1
     else:
         steps = anim_args.interpolate_x_frames + 1
         for i in range(len(key_images) - 1):
             for j in range(steps):
-                t = j * 1.0 / steps
-                _save_and_show(_blend(key_images[i], key_images[i + 1], t), frame_idx)
+                _save_and_show(_interp_frame(i, j * 1.0 / steps), frame_idx)
                 frame_idx += 1
 
     # final key frame

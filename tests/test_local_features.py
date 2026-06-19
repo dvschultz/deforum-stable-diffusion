@@ -86,3 +86,34 @@ def test_local_passes_callback_when_thresholding(tmp_path, monkeypatch):
     monkeypatch.setattr(zl, "_load_pipe", lambda kind: fake_pipe)
     zl.txt2img("p", 8, 8, static_threshold=0.5)
     assert "callback_on_step_end" in captured  # callback wired into the pipe call
+
+
+# --- U5: embedding-slerp interpolation ----------------------------------
+
+def test_slerp_embeds_aligns_to_min_token_length():
+    e1 = [torch.randn(3, 4)]
+    e2 = [torch.randn(5, 4)]
+    out = zl.slerp_embeds(e1, e2, 0.5)
+    assert out[0].shape == (3, 4)  # aligned to the shorter prompt
+
+
+def test_slerp_embeds_endpoints():
+    e1 = [torch.ones(2, 4)]
+    e2 = [torch.ones(2, 4) * 3]
+    near0 = zl.slerp_embeds(e1, e2, 0.0)[0]
+    near1 = zl.slerp_embeds(e1, e2, 1.0)[0]
+    assert torch.allclose(near0, e1[0], atol=1e-4)
+    assert torch.allclose(near1, e2[0], atol=1e-4)
+
+
+def test_txt2img_embeds_passes_prompt_embeds(monkeypatch):
+    captured = {}
+
+    def fake_pipe(**kw):
+        captured.update(kw)
+        return SimpleNamespace(images=[Image.new("RGB", (8, 8))])
+
+    monkeypatch.setattr(zl, "_load_pipe", lambda kind: fake_pipe)
+    embeds = [torch.randn(2, 4)]
+    out = zl.txt2img_embeds(embeds, 8, 8, seed=1)
+    assert captured["prompt_embeds"] is embeds and len(out) == 1
