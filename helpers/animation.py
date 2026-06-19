@@ -166,8 +166,13 @@ def warpMatrix(W, H, theta, phi, gamma, scale, fV):
     return M33, sideLength
 
 def anim_frame_warp(prev, args, anim_args, keys, frame_idx, depth_model=None, depth=None, device='cuda'):
-    if isinstance(prev, np.ndarray):
-        prev_img_cv2 = prev
+    # Distinguish by ndim, not type: a 3-dim array is already an HWC cv2 image
+    # (the turbo/tween path passes those directly); a 4-dim [1,3,H,W] array is a
+    # sample buffer that must be decoded to HWC uint8 first. (Samples used to be
+    # torch tensors, so this was an isinstance check; they're numpy now.)
+    arr = np.asarray(prev)
+    if arr.ndim == 3:
+        prev_img_cv2 = arr
     else:
         prev_img_cv2 = sample_to_cv2(prev)
 
