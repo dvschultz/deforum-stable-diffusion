@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-import torch
 from PIL import Image
 
 from helpers import generate as gen
@@ -31,8 +30,8 @@ def _pil():
 
 
 def _init_sample():
-    # [-1,1] tensor, [1,3,H,W]
-    return torch.zeros((1, 3, 8, 8), dtype=torch.float16)
+    # [-1,1] array, [1,3,H,W]
+    return np.zeros((1, 3, 8, 8), dtype=np.float32)
 
 
 @pytest.fixture
@@ -73,10 +72,10 @@ def test_return_sample_contract(tmp_path, capture):
     assert "img2img" in capture and "txt2img" not in capture  # routing, not just shape
     assert len(out) == 2
     sample, image = out
-    assert isinstance(sample, torch.Tensor)
+    assert isinstance(sample, np.ndarray)
     assert sample.shape == (1, 3, 8, 8)
-    assert sample.dtype == torch.float16
-    assert float(sample.min()) >= -1.0 and float(sample.max()) <= 1.0
+    assert sample.dtype == np.float32
+    assert sample.min() >= -1.0 and sample.max() <= 1.0
     assert isinstance(image, Image.Image)
 
 

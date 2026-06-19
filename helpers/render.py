@@ -2,7 +2,6 @@ import os
 import json
 from IPython import display
 import random
-from torchvision.utils import make_grid
 from einops import rearrange
 import pandas as pd
 os.environ["OPENCV_IO_ENABLE_OPENEXR"]="1"
@@ -10,12 +9,13 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 import pathlib
-import torchvision.transforms as T
+
+# torch-backed imports (torchvision make_grid, the MiDaS DepthModel) are loaded
+# lazily inside the branches that use them, so 2D / image-batch runs stay torch-free.
 
 from .generate import generate, add_noise
 from .prompt import sanitize
 from .animation import DeformAnimKeys, sample_from_cv2, sample_to_cv2, anim_frame_warp, vid2frames
-from .depth import DepthModel
 from .colors import maintain_colors
 from .load_images import prepare_overlay_mask
 from .hybrid_video import hybrid_generation, hybrid_composite
@@ -149,6 +149,7 @@ def render_image_batch(root, args, cond_prompts, uncond_prompts):
                 results = generate(args, root)
                 for image in results:
                     if args.make_grid:
+                        import torchvision.transforms as T
                         all_images.append(T.functional.pil_to_tensor(image))
                     if args.save_samples:
                         if args.filename_format == "{timestring}_{index}_{prompt}.png":
@@ -165,6 +166,7 @@ def render_image_batch(root, args, cond_prompts, uncond_prompts):
 
         #print(len(all_images))
         if args.make_grid:
+            from torchvision.utils import make_grid
             grid = make_grid(all_images, nrow=int(len(all_images)/args.grid_rows))
             grid = rearrange(grid, 'c h w -> h w c').cpu().numpy()
             filename = f"{args.timestring}_{iprompt:05d}_grid_{args.seed}.png"
@@ -246,6 +248,7 @@ def render_animation(root, anim_args, args, cond_prompts, uncond_prompts):
     predict_depths = (anim_args.animation_mode == '3D' and anim_args.use_depth_warping) or anim_args.save_depth_maps
     predict_depths = predict_depths or (anim_args.hybrid_composite and anim_args.hybrid_comp_mask_type in ['Depth','Video Depth'])
     if predict_depths:
+        from .depth import DepthModel  # torch-backed; only loaded when depth is needed
         depth_model = DepthModel(root.device)
         depth_model.load_midas(root.models_path)
         if anim_args.midas_weight < 1.0:
@@ -354,7 +357,7 @@ def render_animation(root, anim_args, args, cond_prompts, uncond_prompts):
                 if args.use_mask and args.overlay_mask:
                     # Apply transforms to the original image
                     init_image_raw, _ = anim_frame_warp(args.init_sample_raw, args, anim_args, keys, frame_idx, depth_model, depth, device=root.device)
-                    args.init_sample_raw = sample_from_cv2(init_image_raw).half().to(root.device)
+                    args.init_sample_raw = sample_from_cv2(init_image_raw)
 
                 #Transform the mask image
                 if args.use_mask:
@@ -362,7 +365,7 @@ def render_animation(root, anim_args, args, cond_prompts, uncond_prompts):
                         args.mask_sample = prepare_overlay_mask(args, root, prev_sample.shape)
                     # Transform the mask
                     mask_image, _ = anim_frame_warp(args.mask_sample, args, anim_args, keys, frame_idx, depth_model, depth, device=root.device)
-                    args.mask_sample = sample_from_cv2(mask_image).half().to(root.device)
+                    args.mask_sample = sample_from_cv2(mask_image)
 
                 turbo_prev_frame_idx = turbo_next_frame_idx = tween_frame_idx
 
@@ -413,7 +416,7 @@ def render_animation(root, anim_args, args, cond_prompts, uncond_prompts):
             if args.use_mask and args.overlay_mask:
                 # Apply transforms to the original image
                 init_image_raw, _ = anim_frame_warp(args.init_sample_raw, args, anim_args, keys, frame_idx, depth_model, depth, device=root.device)
-                args.init_sample_raw = sample_from_cv2(init_image_raw).half().to(root.device)
+                args.init_sample_raw = sample_from_cv2(init_image_raw)
 
             #Transform the mask image
             if args.use_mask:
@@ -421,7 +424,7 @@ def render_animation(root, anim_args, args, cond_prompts, uncond_prompts):
                     args.mask_sample = prepare_overlay_mask(args, root, prev_sample.shape)
                 # Transform the mask
                 mask_sample, _ = anim_frame_warp(args.mask_sample, args, anim_args, keys, frame_idx, depth_model, depth, device=root.device)
-                args.mask_sample = sample_from_cv2(mask_sample).half().to(root.device)
+                args.mask_sample = sample_from_cv2(mask_sample)
             
             # apply color matching
             if anim_args.color_coherence != 'None':
@@ -453,7 +456,7 @@ def render_animation(root, anim_args, args, cond_prompts, uncond_prompts):
 
             # use transformed previous frame as init for current
             args.use_init = True
-            args.init_sample = noised_sample.half().to(root.device)
+            args.init_sample = noised_sample
             args.strength = max(0.0, min(1.0, strength))
 
         # grab prompt for current frame

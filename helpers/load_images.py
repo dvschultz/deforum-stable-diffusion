@@ -1,10 +1,11 @@
-import torch
 import requests
 from PIL import Image
 import numpy as np
-import torchvision.transforms.functional as TF
 from einops import repeat
 from scipy.ndimage import gaussian_filter
+
+# torch / torchvision are imported lazily inside the mask helpers so the core
+# image path (load_img) and the 2D render chain stay torch-free.
 
 def load_img(path, shape=None, use_alpha_as_mask=False):
     # use_alpha_as_mask: Read the alpha channel of the image as the mask image
@@ -28,9 +29,8 @@ def load_img(path, shape=None, use_alpha_as_mask=False):
         mask_image = alpha.convert('L')
         image = image.convert('RGB')
 
-    image = np.array(image).astype(np.float16) / 255.0
+    image = np.array(image).astype(np.float32) / 255.0
     image = image[None].transpose(0, 3, 1, 2)
-    image = torch.from_numpy(image)
     image = 2.*image - 1.
 
     return image, mask_image
@@ -64,28 +64,29 @@ def prepare_mask(mask_input, mask_shape, mask_brightness_adjust=1.0, mask_contra
     
     mask = load_mask_latent(mask_input, mask_shape)
 
-    # Mask brightness/contrast adjustments
-    if mask_brightness_adjust != 1:
-        mask = TF.adjust_brightness(mask, mask_brightness_adjust)
-    if mask_contrast_adjust != 1:
-        mask = TF.adjust_contrast(mask, mask_contrast_adjust)
+    # Mask brightness/contrast adjustments (torchvision functional on a PIL image).
+    if mask_brightness_adjust != 1 or mask_contrast_adjust != 1:
+        import torchvision.transforms.functional as TF
+        if mask_brightness_adjust != 1:
+            mask = TF.adjust_brightness(mask, mask_brightness_adjust)
+        if mask_contrast_adjust != 1:
+            mask = TF.adjust_contrast(mask, mask_contrast_adjust)
 
-    # Mask image to array
+    # Mask image to array (numpy throughout; no tensor needed)
     mask = np.array(mask).astype(np.float32) / 255.0
     mask = np.tile(mask,(4,1,1))
     mask = np.expand_dims(mask,axis=0)
-    mask = torch.from_numpy(mask)
 
     if invert_mask:
         mask = ( (mask - 0.5) * -1) + 0.5
-    
+
     mask = np.clip(mask,0,1)
     return mask
 
 def prepare_overlay_mask(args, root, mask_shape):
-    mask_fullres = prepare_mask(args.mask_file, 
-                                mask_shape, 
-                                args.mask_contrast_adjust, 
+    mask_fullres = prepare_mask(args.mask_file,
+                                mask_shape,
+                                args.mask_contrast_adjust,
                                 args.mask_brightness_adjust,
                                 args.invert_mask)
     mask_fullres = mask_fullres[:,:3,:,:]
@@ -93,7 +94,6 @@ def prepare_overlay_mask(args, root, mask_shape):
 
     mask_fullres[mask_fullres < mask_fullres.max()] = 0
     mask_fullres = gaussian_filter(mask_fullres, args.mask_overlay_blur)
-    mask_fullres = torch.Tensor(mask_fullres).to(root.device)
     return mask_fullres
 
 

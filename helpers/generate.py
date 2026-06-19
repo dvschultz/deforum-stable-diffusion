@@ -19,7 +19,6 @@ import os
 
 # Related third-party imports
 import numpy as np
-import torch
 from PIL import Image, ImageOps, ImageFilter
 
 # Local application/library specific imports
@@ -27,21 +26,21 @@ from .animation import sample_from_cv2, sample_to_cv2
 from . import zimage_client as zc
 
 
-def add_noise(sample: torch.Tensor, noise_amt: float) -> torch.Tensor:
-    return sample + torch.randn(sample.shape, device=sample.device) * noise_amt
+def add_noise(sample: np.ndarray, noise_amt: float) -> np.ndarray:
+    return sample + np.random.randn(*sample.shape).astype(sample.dtype) * noise_amt
 
 
-def _sample_to_pil(sample: torch.Tensor) -> Image.Image:
-    """Convert a ``[-1,1]`` sample tensor ([1,3,H,W] or [3,H,W]) to a PIL RGB image."""
+def _sample_to_pil(sample: np.ndarray) -> Image.Image:
+    """Convert a ``[-1,1]`` sample array ([1,3,H,W] or [3,H,W]) to a PIL RGB image."""
     arr = sample_to_cv2(sample, type=np.uint8)  # HWC uint8 RGB
     return Image.fromarray(arr)
 
 
-def _pil_to_sample(pil: Image.Image) -> torch.Tensor:
-    """Convert a PIL RGB image to a ``[-1,1]`` float16 tensor ([1,3,H,W]).
+def _pil_to_sample(pil: Image.Image) -> np.ndarray:
+    """Convert a PIL RGB image to a ``[-1,1]`` float32 array ([1,3,H,W]).
 
-    Inverse of ``_sample_to_pil``; matches the contract the render loop expects
-    from the old ``decode_first_stage`` output so frame warping is unchanged.
+    Inverse of ``_sample_to_pil``; the "sample" is the pixel buffer the render loop
+    warps into the next frame's init image (no longer a latent/tensor).
     """
     return sample_from_cv2(np.array(pil.convert("RGB")))
 
@@ -134,7 +133,7 @@ def generate(args, root, frame=0, return_latent=False, return_sample=False, retu
                             seed=seed, steps=steps, num_images=n_samples, acceleration=acceleration)
 
     # Fail loudly if the API returned nothing (quota/content-filter/schema change),
-    # rather than crashing later in torch.cat or the render loop's tuple unpack.
+    # rather than crashing later in np.concatenate or the render loop's tuple unpack.
     if not images:
         raise RuntimeError(
             f"Z-Image Turbo returned no images (prompt={prompt!r}). "
@@ -142,8 +141,8 @@ def generate(args, root, frame=0, return_latent=False, return_sample=False, retu
         )
 
     # image_size is a request hint, not a guarantee: normalize every result to the
-    # requested canvas so frame warps, batching (torch.cat), and ffmpeg assembly
-    # never see drifting dimensions.
+    # requested canvas so frame warps, batching (np.concatenate), and ffmpeg
+    # assembly never see drifting dimensions.
     images = [im if im.size == (args.W, args.H) else im.resize((args.W, args.H), Image.LANCZOS)
               for im in images]
 
@@ -153,7 +152,7 @@ def generate(args, root, frame=0, return_latent=False, return_sample=False, retu
 
     results = []
     if return_sample:
-        # Batched [B,3,H,W] sample tensor for the render loop's next-frame warp.
-        results.append(torch.cat([_pil_to_sample(im) for im in images], dim=0))
+        # Batched [B,3,H,W] sample array for the render loop's next-frame warp.
+        results.append(np.concatenate([_pil_to_sample(im) for im in images], axis=0))
     results.extend(images)
     return results

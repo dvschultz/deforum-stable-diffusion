@@ -41,73 +41,62 @@ def pip_install_packages(packages, extra_index_url=None, verbose=False, pre=Fals
     return
 
 
-def install_requirements(verbose=False):
+# Light core: everything the hosted-generation (Z-Image Turbo on fal.ai) path,
+# 2D/3D motion, color coherence, hybrid video, the notebook, and ffmpeg assembly
+# need. No torch -- generation runs remotely.
+CORE = [
+    "fal-client",
+    "pillow",
+    "numpy",
+    "opencv-python",
+    "pandas",
+    "einops",
+    "requests",
+    "scipy",
+    "numexpr",
+    "numpngw",
+    "scikit-image==0.19.3",   # colors.maintain_colors (match_histograms)
+    "pydantic",
+    "colab-convert",
+    "ipython",
+    "ipywidgets",
+    "jupyterlab",
+    "notebook",
+    "jupyter_http_over_ws",
+]
+
+# Optional: only needed for 3D depth warping (MiDaS/AdaBins) and grid previews.
+# Pulls the heavy GPU stack; install with --with-3d.
+THREE_D = [
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "timm",   # MiDaS backbone
+]
+PYTORCH_INDEX = "https://download.pytorch.org/whl/nightly/cu121"
+
+
+def install_requirements(verbose=False, with_3d=False):
 
     # Detect System
     os_system = platform.system()
     print(f"system detected: {os_system}")
 
-    # Install pytorch
-    torch = [
-        "torch",
-        "torchvision",
-        "torchaudio"
-    ]
-    extra_index_url = "https://download.pytorch.org/whl/nightly/cu121"
-    pip_install_packages(torch, extra_index_url=extra_index_url, verbose=verbose, pre=True)
+    pip_install_packages(CORE, verbose=verbose)
 
-    # List of common packages to install
-    common = [
-        "clean-fid",
-        "colab-convert",
-        "einops",
-        "ftfy",
-        "ipython",
-        "ipywidgets",
-        "jsonmerge",
-        "jupyterlab",
-        "jupyter_http_over_ws",
-        "kornia",
-        "matplotlib",
-        "notebook",
-        "numexpr",
-        "omegaconf",
-        "opencv-python",
-        "pandas",
-        "pytorch_lightning==1.7.7",
-        "resize-right",
-        "scikit-image==0.19.3",
-        "scikit-learn",
-        "timm",
-        "torchdiffeq",
-        "transformers==4.19.2",
-        "safetensors",
-        "albumentations",
-        "more_itertools",
-        "devtools",
-        "validators",
-        "numpngw",
-        "open-clip-torch",
-        "torchsde",
-        "ninja",
-        "pydantic",
-        "fal-client",
-    ]
-    pip_install_packages(common)
+    if with_3d:
+        print("..installing 3D/depth extras (torch stack -- this is large)")
+        pip_install_packages(THREE_D, extra_index_url=PYTORCH_INDEX, verbose=verbose, pre=True)
+    else:
+        print("..skipping the torch stack: generation runs on fal.ai (Z-Image Turbo),")
+        print("  and 2D animation / image batches need no GPU.")
+        print("  For 3D depth warping or grid previews, re-run with --with-3d")
 
-    # Xformers install
-    linux_xformers = [
-        "triton",
-        "xformers==0.0.21.dev546",
-    ]
-    windows_xformers = [
-        "xformers==0.0.21.dev546",
-    ]
-    xformers = windows_xformers if os_system == 'Windows' else linux_xformers
-    pip_install_packages(xformers)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument('--with-3d', action='store_true',
+                        help='also install torch + MiDaS/AdaBins deps for 3D depth warping')
     parser.add_argument('--verbose', action='store_true', help='print pip install stuff')
     args = parser.parse_args()
-    install_requirements(verbose=args.verbose)
+    install_requirements(verbose=args.verbose, with_3d=args.with_3d)

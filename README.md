@@ -130,8 +130,13 @@ cd deforum-stable-diffusion
 3. Install required packages with the install script:
 
 ```
-python install_requirements.py
+python install_requirements.py            # light core (no torch) -- fine for 2D + image batches
+python install_requirements.py --with-3d  # also installs torch + MiDaS for 3D depth warping
 ```
+
+Generation runs remotely on Z-Image Turbo, so the default install pulls **no torch/GPU
+stack** — enough for txt2img, image batches, and 2D animation. Add `--with-3d` only if you
+want 3D depth warping (the local MiDaS/AdaBins model) or grid previews.
 
 4. Check your installation by running the Python script:
 
