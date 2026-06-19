@@ -133,7 +133,6 @@ def render_image_batch(root, args, cond_prompts, uncond_prompts):
     for iprompt, (cond_prompt, uncond_prompt) in enumerate(zip(cond_prompts,uncond_prompts)):
         args.cond_prompt = cond_prompt
         args.uncond_prompt = uncond_prompt
-        args.clip_prompt = cond_prompt
         print(f"Prompt {iprompt+1} of {len(cond_prompts)}")
         print(f"cond_prompt: {args.cond_prompt}")
         print(f"uncond_prompt: {args.uncond_prompt}")
@@ -460,7 +459,6 @@ def render_animation(root, anim_args, args, cond_prompts, uncond_prompts):
         # grab prompt for current frame
         args.cond_prompt = cond_prompt_series[frame_idx]
         args.uncond_prompt = uncond_prompt_series[frame_idx]
-        args.clip_prompt = cond_prompt_series[frame_idx]
         print(f"seed: {args.seed}")
         print(f"cond_prompt: {args.cond_prompt}")
         print(f"uncond_prompt: {args.uncond_prompt}")
@@ -578,7 +576,6 @@ def render_interpolation(root, anim_args, args, cond_prompts, uncond_prompts):
     print(f"Rendering key frames for interpolation...")
     for i, prompt in cond_prompts.items():
         args.cond_prompt = prompt
-        args.clip_prompt = args.cond_prompt
         args.use_init = False
         args.init_sample = None
         results = generate(args, root)
@@ -588,6 +585,10 @@ def render_interpolation(root, anim_args, args, cond_prompts, uncond_prompts):
             image = convert_image_to_8bpc(image, args.bit_depth_output)
         display.display(image)
         args.seed = next_seed(args)
+
+    if not key_images:
+        print("No key prompts provided; nothing to interpolate.")
+        return
 
     display.clear_output(wait=True)
     print(f"Interpolation start...")

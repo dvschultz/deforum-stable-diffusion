@@ -62,13 +62,22 @@ def _load_init_pil(args) -> Image.Image:
 
 
 def _load_mask_pil(args) -> Image.Image:
-    """Return a PIL 'L' mask (white = regions that change), resized to W x H, else None."""
-    mask_src = getattr(args, "mask_file", None)
-    if not mask_src:
-        return None
-    from .load_images import load_mask_latent
-    mask = load_mask_latent(mask_src, (1, 1, args.H, args.W)).convert("L")
-    mask = mask.resize((args.W, args.H), Image.LANCZOS)
+    """Return a PIL 'L' mask (white = regions that change), resized to W x H, else None.
+
+    Prefers ``args.mask_sample`` when present: the render loop warps the mask each
+    frame so the changeable region tracks 2D/3D motion. Falls back to the static
+    ``args.mask_file`` otherwise.
+    """
+    if getattr(args, "mask_sample", None) is not None:
+        mask = _sample_to_pil(args.mask_sample).convert("L")
+    else:
+        mask_src = getattr(args, "mask_file", None)
+        if not mask_src:
+            return None
+        from .load_images import load_mask_latent
+        mask = load_mask_latent(mask_src, (1, 1, args.H, args.W)).convert("L")
+    if mask.size != (args.W, args.H):
+        mask = mask.resize((args.W, args.H), Image.LANCZOS)
     if getattr(args, "invert_mask", False):
         mask = ImageOps.invert(mask)
     return mask
@@ -123,6 +132,20 @@ def generate(args, root, frame=0, return_latent=False, return_sample=False, retu
     else:
         images = zc.txt2img(prompt, args.W, args.H,
                             seed=seed, steps=steps, num_images=n_samples, acceleration=acceleration)
+
+    # Fail loudly if the API returned nothing (quota/content-filter/schema change),
+    # rather than crashing later in torch.cat or the render loop's tuple unpack.
+    if not images:
+        raise RuntimeError(
+            f"Z-Image Turbo returned no images (prompt={prompt!r}). "
+            "Check your fal.ai quota and the endpoint response."
+        )
+
+    # image_size is a request hint, not a guarantee: normalize every result to the
+    # requested canvas so frame warps, batching (torch.cat), and ffmpeg assembly
+    # never see drifting dimensions.
+    images = [im if im.size == (args.W, args.H) else im.resize((args.W, args.H), Image.LANCZOS)
+              for im in images]
 
     # Optional pixel-space overlay: preserve unmasked regions of the init.
     if mask_pil is not None and getattr(args, "overlay_mask", False):

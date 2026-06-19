@@ -20,12 +20,7 @@ from helpers.render import (
     render_interpolation,
 )
 from helpers.prompts import Prompts
-from helpers.zimage_client import (
-    resolve_fal_key,
-    ENDPOINT_TXT2IMG,
-    ENDPOINT_IMG2IMG,
-    ENDPOINT_INPAINT,
-)
+from helpers.zimage_client import resolve_fal_key
 
 
 class Predictor(BasePredictor):
@@ -233,14 +228,7 @@ class Predictor(BasePredictor):
 
         root = {"device": self.device, "models_path": "models", "configs_path": "configs"}
         # No local weights: root.model is a lightweight Z-Image Turbo handle.
-        root["model"] = SimpleNamespace(
-            backend="z-image-turbo",
-            endpoints={
-                "txt2img": ENDPOINT_TXT2IMG,
-                "img2img": ENDPOINT_IMG2IMG,
-                "inpaint": ENDPOINT_INPAINT,
-            },
-        )
+        root["model"] = SimpleNamespace(backend="z-image-turbo")
         root = SimpleNamespace(**root)
 
         # using some of the default settings for simplicity

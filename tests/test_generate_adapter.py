@@ -68,8 +68,9 @@ def test_img2img_when_init_and_strength(tmp_path, capture):
 
 
 def test_return_sample_contract(tmp_path, capture):
-    args = make_args(tmp_path, init_sample=_init_sample(), strength=0.5)
+    args = make_args(tmp_path, use_init=True, init_sample=_init_sample(), strength=0.5)
     out = gen.generate(args, root=None, return_sample=True)
+    assert "img2img" in capture and "txt2img" not in capture  # routing, not just shape
     assert len(out) == 2
     sample, image = out
     assert isinstance(sample, torch.Tensor)
@@ -77,6 +78,30 @@ def test_return_sample_contract(tmp_path, capture):
     assert sample.dtype == torch.float16
     assert float(sample.min()) >= -1.0 and float(sample.max()) <= 1.0
     assert isinstance(image, Image.Image)
+
+
+def test_empty_images_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr(gen.zc, "txt2img", lambda *a, **k: [])
+    args = make_args(tmp_path)
+    with pytest.raises(RuntimeError, match="no images"):
+        gen.generate(args, root=None)
+
+
+def test_result_resized_to_canvas(tmp_path, monkeypatch):
+    # API may return a different size than requested; generate must normalize it.
+    monkeypatch.setattr(gen.zc, "txt2img", lambda *a, **k: [Image.new("RGB", (640, 480), (1, 2, 3))])
+    args = make_args(tmp_path, W=8, H=8)
+    out = gen.generate(args, root=None)
+    assert out[0].size == (8, 8)
+
+
+def test_mask_sample_routes_to_inpaint_via_real_loader(tmp_path, capture):
+    # With a warped per-frame mask present, _load_mask_pil (real, not mocked) should
+    # build the mask from mask_sample and route to inpaint.
+    args = make_args(tmp_path, init_sample=_init_sample(), use_mask=True,
+                     mask_sample=_init_sample(), strength=0.6)
+    gen.generate(args, root=None)
+    assert "inpaint" in capture
 
 
 def test_strength_zero_no_init_falls_back_to_txt2img(tmp_path, capture):

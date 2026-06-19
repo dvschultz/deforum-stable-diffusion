@@ -18,14 +18,9 @@ def load_model(root, load_on_run_all=True, check_sha256=True, map_location="cuda
     """
     zc.resolve_fal_key()
 
-    model = SimpleNamespace(
-        backend="z-image-turbo",
-        endpoints={
-            "txt2img": zc.ENDPOINT_TXT2IMG,
-            "img2img": zc.ENDPOINT_IMG2IMG,
-            "inpaint": zc.ENDPOINT_INPAINT,
-        },
-    )
+    # Lightweight handle. generate() calls the zimage_client endpoints directly,
+    # so this only marks the active backend (for logging / assertions).
+    model = SimpleNamespace(backend="z-image-turbo")
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     print("..using Z-Image Turbo (fal.ai); no local model weights loaded")

@@ -79,7 +79,7 @@ def test_submit_retries_transient_then_succeeds(monkeypatch):
     monkeypatch.setenv("FAL_KEY", "k")
     calls = {"n": 0}
 
-    def flaky(endpoint, arguments=None):
+    def flaky(endpoint, arguments=None, **kwargs):
         calls["n"] += 1
         if calls["n"] < 3:
             raise RuntimeError("503 Service Unavailable")
@@ -95,7 +95,7 @@ def test_submit_fails_fast_on_auth(monkeypatch):
     monkeypatch.setenv("FAL_KEY", "k")
     calls = {"n": 0}
 
-    def auth_fail(endpoint, arguments=None):
+    def auth_fail(endpoint, arguments=None, **kwargs):
         calls["n"] += 1
         raise RuntimeError("401 Unauthorized")
 
@@ -108,7 +108,7 @@ def test_submit_fails_fast_on_auth(monkeypatch):
 def test_submit_gives_up_after_max_retries(monkeypatch):
     monkeypatch.setenv("FAL_KEY", "k")
 
-    def always_fail(endpoint, arguments=None):
+    def always_fail(endpoint, arguments=None, **kwargs):
         raise RuntimeError("timeout")
 
     monkeypatch.setattr(zc.fal_client, "subscribe", always_fail)
@@ -155,6 +155,23 @@ def test_img2img_inverts_strength_and_uploads(monkeypatch):
     assert captured["endpoint"] == zc.ENDPOINT_IMG2IMG
     assert captured["arguments"]["image_url"] == "http://uploaded/init.png"
     assert captured["arguments"]["strength"] == pytest.approx(0.35)  # inverted
+
+
+def test_acceleration_none_is_omitted(monkeypatch):
+    captured = {}
+
+    def fake_submit(endpoint, arguments, **kw):
+        captured["arguments"] = arguments
+        return {"images": [{"url": "u"}]}
+
+    monkeypatch.setattr(zc, "_submit", fake_submit)
+    monkeypatch.setattr(zc, "_download_image", lambda url: _img())
+
+    zc.txt2img("p", 512, 512, acceleration="none")
+    assert "acceleration" not in captured["arguments"]  # 'none' -> field omitted
+
+    zc.txt2img("p", 512, 512, acceleration="high")
+    assert captured["arguments"]["acceleration"] == "high"
 
 
 def test_inpaint_uploads_image_and_mask(monkeypatch):

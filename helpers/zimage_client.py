@@ -17,10 +17,10 @@ Auth is via the FAL_KEY environment variable (fal-client's native convention).
 
 # Standard library imports
 import io
+import os
 import time
 
 # Related third-party imports
-import os
 import requests
 from PIL import Image
 
@@ -35,6 +35,11 @@ ENDPOINT_INPAINT = "fal-ai/z-image/turbo/inpaint"
 # Z-Image Turbo is distilled to a small step budget.
 MAX_STEPS = 8
 MIN_STEPS = 1
+
+# Per-call timeouts (seconds) so a stuck fal queue raises and the retry loop
+# engages, instead of hanging an unattended render indefinitely.
+START_TIMEOUT = 120
+CLIENT_TIMEOUT = 300
 
 # Substrings that mark a non-retryable authentication/authorization failure.
 _AUTH_ERROR_MARKERS = ("401", "403", "unauthorized", "forbidden", "invalid api key", "fal_key")
@@ -96,7 +101,12 @@ def _submit(endpoint, arguments, max_retries=4, base_delay=1.0, sleep=time.sleep
     last_exc = None
     for attempt in range(max_retries):
         try:
-            return fal_client.subscribe(endpoint, arguments=arguments)
+            return fal_client.subscribe(
+                endpoint,
+                arguments=arguments,
+                start_timeout=START_TIMEOUT,
+                client_timeout=CLIENT_TIMEOUT,
+            )
         except Exception as exc:  # noqa: BLE001 - fal/httpx raise varied types
             if _is_auth_error(exc):
                 raise
@@ -109,8 +119,14 @@ def _submit(endpoint, arguments, max_retries=4, base_delay=1.0, sleep=time.sleep
 
 
 def _upload(image):
-    """Upload a PIL image to fal and return its URL."""
-    return fal_client.upload_image(image)
+    """Upload a PIL image to fal as PNG and return its URL.
+
+    PNG (not the client default of JPEG) matters here: init frames are re-uploaded
+    every animation frame, so lossy recompression would compound artifacts and
+    degrade coherence, and a JPEG-compressed mask gets soft edges that shift which
+    pixels the inpaint endpoint treats as masked.
+    """
+    return fal_client.upload_image(image, format="png")
 
 
 def _download_image(url):
@@ -139,7 +155,7 @@ def _base_arguments(prompt, W, H, seed, steps, num_images, acceleration):
         "num_images": int(num_images),
         "output_format": "png",
     }
-    if acceleration:
+    if acceleration and acceleration != "none":
         args["acceleration"] = acceleration
     if seed is not None:
         args["seed"] = int(seed)

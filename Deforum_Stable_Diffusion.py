@@ -89,14 +89,12 @@ from helpers.prompts import Prompts
 # !! }}
 #@markdown **fal.ai API Key**
 #@markdown Generation runs on the hosted Z-Image Turbo model via fal.ai.
-#@markdown Get a key at https://fal.ai/dashboard/keys and paste it below, or
-#@markdown leave blank to use an existing `FAL_KEY` environment variable.
+#@markdown Set `FAL_KEY` in your environment, or run this cell to be prompted.
+#@markdown (The key is read via getpass and is NOT written into the notebook, so it
+#@markdown can't be committed by accident -- get one at https://fal.ai/dashboard/keys.)
 import os
 from getpass import getpass
 
-fal_key = "" #@param {type:"string"}
-if fal_key:
-    os.environ["FAL_KEY"] = fal_key.strip()
 if not os.environ.get("FAL_KEY"):
     os.environ["FAL_KEY"] = getpass("Enter your FAL_KEY: ").strip()
 
@@ -336,6 +334,9 @@ anim_args = SimpleNamespace(**anim_args_dict)
 
 args.timestring = time.strftime('%Y%m%d%H%M%S')
 args.strength = max(0.0, min(1.0, args.strength))
+# Z-Image Turbo returns 8-bit images; force 8-bit so a legacy settings file that
+# restores bit_depth_output=16/32 can't crash the save/convert path.
+args.bit_depth_output = 8
 
 if args.seed == -1:
     args.seed = random.randint(0, 2**32 - 1)
