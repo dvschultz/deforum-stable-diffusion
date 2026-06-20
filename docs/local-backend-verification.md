@@ -36,8 +36,18 @@ python install_requirements.py --with-local      # torch + diffusers-from-source
 hf download Tongyi-MAI/Z-Image-Turbo              # ~6B weights; note the local path
 export DEFORUM_BACKEND=local                      # or set backend in ModelSetup
 # optional: export ZIMAGE_LOCAL_PATH=/path/to/Z-Image-Turbo   # skip re-download
+# optional: export ZIMAGE_QUANTIZE=int8            # ~11GB resident vs ~20GB bf16 (needs bitsandbytes)
 python -m pytest tests/ -q                         # sanity: mocked suite should still pass
 ```
+
+### Low-VRAM option (24GB cards)
+
+The bf16 pipeline is ~20GB resident, leaving little headroom (interpolation/guidance can
+OOM, and a 2D animation loads txt2img+img2img ~= 40GB). Set `ZIMAGE_QUANTIZE=int8` (or
+`nf4`) to quantize the transformer **and** text encoder via bitsandbytes: ~11GB (int8) /
+~7GB (nf4) resident, which clears the headroom problems. Note: on Ampere (A5000, sm_86)
+there's no native int8/fp8 *compute*, so matmuls dequantize to bf16 — this is a memory
+lever, not a speed one (generation is ~2x slower). Default (unset) keeps full bf16.
 
 ## Test sequence
 

@@ -90,6 +90,7 @@ LOCAL = [
     "ftfy",
     "regex",   # ftfy + the vendored CLIP (used by experimental gradient guidance)
     "scikit-learn",   # conditioning.KMeans color-palette loss (experimental gradient guidance)
+    "bitsandbytes",   # optional: ZIMAGE_QUANTIZE=int8/nf4 to halve/quarter resident VRAM
 ]
 PYTORCH_INDEX = "https://download.pytorch.org/whl/nightly/cu121"
 

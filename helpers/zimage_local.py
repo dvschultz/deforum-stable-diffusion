@@ -37,6 +37,32 @@ def _device():
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
+def _quant_config():
+    """Optional in-loader weight quantization, OFF by default (bf16). Set env
+    ``ZIMAGE_QUANTIZE=int8`` (or ``nf4``) to shrink the resident pipeline ~2x / ~4x via
+    bitsandbytes -- quantizes both the transformer AND the large text encoder. Useful on
+    24GB cards where the bf16 pipeline (~20GB) leaves little headroom. CUDA only; the
+    A5000/Ampere has no native fp8/int8 *compute*, so matmuls run in bf16 (no speedup) --
+    this is a memory lever, not a speed one. Returns None when disabled."""
+    mode = os.environ.get("ZIMAGE_QUANTIZE", "").strip().lower()
+    if mode in ("", "none", "off", "no", "bf16", "0"):
+        return None
+    from diffusers import PipelineQuantizationConfig
+    comps = ["transformer", "text_encoder"]
+    if mode in ("int8", "8bit", "8"):
+        return PipelineQuantizationConfig(
+            quant_backend="bitsandbytes_8bit",
+            quant_kwargs={"load_in_8bit": True},
+            components_to_quantize=comps)
+    if mode in ("int4", "nf4", "4bit", "4"):
+        return PipelineQuantizationConfig(
+            quant_backend="bitsandbytes_4bit",
+            quant_kwargs={"load_in_4bit": True, "bnb_4bit_quant_type": "nf4",
+                          "bnb_4bit_compute_dtype": torch.bfloat16},
+            components_to_quantize=comps)
+    raise ValueError(f"ZIMAGE_QUANTIZE={mode!r} not recognized (use 'int8', 'nf4', or unset).")
+
+
 def _load_pipe(kind):
     """Load and cache a ZImage pipeline of the given kind."""
     if kind in _PIPES:
@@ -58,7 +84,19 @@ def _load_pipe(kind):
             "git+https://github.com/huggingface/diffusers.git"
         )
     dtype = torch.bfloat16 if _device() == "cuda" else torch.float32
-    pipe = Pipe.from_pretrained(MODEL_ID, torch_dtype=dtype).to(_device())
+    quant = _quant_config() if _device() == "cuda" else None
+    if quant is not None:
+        # bitsandbytes places the quantized weights on the GPU itself, and calling .to()
+        # on a quantized model raises -- so move only the non-quantized components (e.g.
+        # the VAE) to the device; the quantized ones are already there.
+        pipe = Pipe.from_pretrained(MODEL_ID, torch_dtype=dtype, quantization_config=quant)
+        for comp in pipe.components.values():
+            if isinstance(comp, torch.nn.Module) and not (
+                    getattr(comp, "is_loaded_in_8bit", False)
+                    or getattr(comp, "is_loaded_in_4bit", False)):
+                comp.to(_device())
+    else:
+        pipe = Pipe.from_pretrained(MODEL_ID, torch_dtype=dtype).to(_device())
     _PIPES[kind] = pipe
     return pipe
 
