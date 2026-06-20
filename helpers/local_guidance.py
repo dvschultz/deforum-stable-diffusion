@@ -87,9 +87,15 @@ def make_guidance_callback(args, root):
         latents = cbk["latents"]
 
         def decode_fn(lat):
-            sf = getattr(getattr(pipe, "vae", None), "config", None)
-            sf = getattr(sf, "scaling_factor", 1.0) if sf is not None else 1.0
-            return pipe.vae.decode(lat / sf, return_dict=False)[0]
+            vae = pipe.vae
+            cfg = getattr(vae, "config", None)
+            sf = getattr(cfg, "scaling_factor", 1.0) if cfg is not None else 1.0
+            shift = getattr(cfg, "shift_factor", 0.0) if cfg is not None else 0.0
+            # Denoising keeps latents in fp32 while the VAE is bf16; the differentiable
+            # .to(vae.dtype) cast keeps `lat` (requires_grad) in the autograd graph. Also
+            # apply shift_factor so the decode matches the pipeline's own normalization.
+            lat = lat.to(vae.dtype)
+            return vae.decode(lat / sf + shift, return_dict=False)[0]
 
         return {"latents": apply_latent_guidance(latents, decode_fn, loss_fn, scale=1.0, clamp=clamp)}
 

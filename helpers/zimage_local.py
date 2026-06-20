@@ -101,8 +101,13 @@ def _make_step_callback(dynamic_threshold=None, static_threshold=None,
         if save_sample_per_step and outdir:
             try:
                 import os
+                # Mirror the pipeline's own latent->image decode (denoising keeps
+                # latents in float32 while the VAE is bf16, and this VAE has a
+                # shift_factor): cast to the VAE dtype, unscale, then unshift.
+                lat = latents.to(pipe.vae.dtype)
+                lat = (lat / pipe.vae.config.scaling_factor) + pipe.vae.config.shift_factor
                 img = pipe.image_processor.postprocess(
-                    pipe.vae.decode(latents / pipe.vae.config.scaling_factor, return_dict=False)[0],
+                    pipe.vae.decode(lat, return_dict=False)[0],
                     output_type="pil")[0]
                 img.save(os.path.join(outdir, f"{timestring}_step_{step:03d}.png"))
             except Exception:
@@ -187,7 +192,11 @@ def inpaint(prompt, init_image, mask_image, deforum_strength, W, H, seed=None, s
 def encode_prompt(prompt):
     """Return the prompt's text embedding (a list of token tensors, per diffusers)."""
     pipe = _load_pipe("txt2img")
-    prompt_embeds, _negative = pipe.encode_prompt(prompt, do_classifier_free_guidance=False)
+    # no_grad: the pipe's own __call__ is wrapped, but calling encode_prompt directly
+    # is not -- without this the text-encoder activation graph stays alive (the returned
+    # embeds reference it), leaking ~3GB and OOM-ing interpolation on a 24GB card.
+    with torch.no_grad():
+        prompt_embeds, _negative = pipe.encode_prompt(prompt, do_classifier_free_guidance=False)
     return prompt_embeds
 
 
@@ -203,10 +212,17 @@ def slerp_embeds(e1, e2, t):
     return out
 
 
-def txt2img_embeds(prompt_embeds, W, H, seed=None, steps=8, guidance_scale=5.0,
+def txt2img_embeds(prompt_embeds, W, H, seed=None, steps=8, guidance_scale=0.0,
                    output_type="pil", **kw):
-    """Generate from precomputed (e.g. slerped) prompt embeddings."""
+    """Generate from precomputed (e.g. slerped) prompt embeddings.
+
+    The embeds path carries only positive (conditional) embeddings -- encode_prompt
+    returns no negatives -- so classifier-free guidance can't be applied here: the
+    diffusers ZImage pipeline raises if CFG is on (guidance_scale>0) without
+    negative_prompt_embeds. Force it off. Z-Image Turbo is distilled for CFG-free
+    few-step sampling, so unguided is the intended mode for the morph anyway.
+    """
     pipe = _load_pipe("txt2img")
     out = pipe(prompt_embeds=prompt_embeds,
-               **_common_kwargs(W, H, seed, steps, 1, guidance_scale, output_type, kw))
+               **_common_kwargs(W, H, seed, steps, 1, 0.0, output_type, kw))
     return list(out.images)
