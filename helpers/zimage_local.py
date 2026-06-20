@@ -38,14 +38,23 @@ def _device():
 
 
 def _quant_config():
-    """Optional in-loader weight quantization, OFF by default (bf16). Set env
-    ``ZIMAGE_QUANTIZE=int8`` (or ``nf4``) to shrink the resident pipeline ~2x / ~4x via
-    bitsandbytes -- quantizes both the transformer AND the large text encoder. Useful on
-    24GB cards where the bf16 pipeline (~20GB) leaves little headroom. CUDA only; the
-    A5000/Ampere has no native fp8/int8 *compute*, so matmuls run in bf16 (no speedup) --
-    this is a memory lever, not a speed one. Returns None when disabled."""
+    """Optional in-loader weight quantization, OFF by default (full bf16, fastest). Opt in
+    with env ``ZIMAGE_QUANTIZE``: ``int8`` (~11GB resident, ~bf16 quality, but ~1.5x slower
+    per image on Ampere) or ``nf4`` (~6.5GB, near-bf16 speed, lower fidelity to bf16).
+    Quantizes the transformer AND the large text encoder via bitsandbytes. CUDA only.
+
+    On Ampere (A5000, sm_86) there's no native int8/fp8 *compute*, so matmuls dequantize to
+    bf16 -- quantization is a memory lever, not a speed one. Reach for it only when truly
+    memory-bound; component sharing (see _load_pipe) already lets a full-precision animation
+    fit 24GB at full speed. Falls back to bf16 (with a note) if bitsandbytes is missing."""
     mode = os.environ.get("ZIMAGE_QUANTIZE", "").strip().lower()
     if mode in ("", "none", "off", "no", "bf16", "0"):
+        return None
+    try:
+        import bitsandbytes  # noqa: F401
+    except Exception:
+        print(f"..ZIMAGE_QUANTIZE={mode} but bitsandbytes is unavailable; loading in bf16. "
+              "Install bitsandbytes (bundled in --with-local) or set ZIMAGE_QUANTIZE=bf16.")
         return None
     from diffusers import PipelineQuantizationConfig
     comps = ["transformer", "text_encoder"]
@@ -83,18 +92,32 @@ def _load_pipe(kind):
             "require diffusers from source: pip install "
             "git+https://github.com/huggingface/diffusers.git"
         )
+    # Share weights across kinds: txt2img/img2img/inpaint are separate pipeline classes but
+    # use the same transformer/text_encoder/vae, so build later kinds from an already-loaded
+    # one's components -- same module objects, no extra VRAM. Without this a 2D animation
+    # (txt2img frame 0 + img2img rest) would hold two ~20GB copies -> ~40GB -> OOM on 24GB.
+    # (We construct directly rather than via from_pipe, which re-runs .to(dtype) over all
+    # ~20GB of modules and spikes memory enough to OOM at the 24GB edge.)
+    if _PIPES:
+        import inspect
+        base = next(iter(_PIPES.values()))
+        expected = set(inspect.signature(Pipe.__init__).parameters) - {"self"}
+        pipe = Pipe(**{k: v for k, v in base.components.items() if k in expected})
+        _PIPES[kind] = pipe
+        return pipe
     dtype = torch.bfloat16 if _device() == "cuda" else torch.float32
     quant = _quant_config() if _device() == "cuda" else None
     if quant is not None:
-        # bitsandbytes places the quantized weights on the GPU itself, and calling .to()
-        # on a quantized model raises -- so move only the non-quantized components (e.g.
-        # the VAE) to the device; the quantized ones are already there.
+        # bitsandbytes places the quantized weights on the GPU itself, and calling .to() on
+        # a quantized model raises -- so move only the non-quantized components (the VAE) to
+        # the device. Cast them to the compute dtype too: otherwise the VAE stays fp32 and
+        # img2img/inpaint's vae.encode(bf16 image) hits a dtype mismatch.
         pipe = Pipe.from_pretrained(MODEL_ID, torch_dtype=dtype, quantization_config=quant)
         for comp in pipe.components.values():
             if isinstance(comp, torch.nn.Module) and not (
                     getattr(comp, "is_loaded_in_8bit", False)
                     or getattr(comp, "is_loaded_in_4bit", False)):
-                comp.to(_device())
+                comp.to(_device(), dtype=dtype)
     else:
         pipe = Pipe.from_pretrained(MODEL_ID, torch_dtype=dtype).to(_device())
     _PIPES[kind] = pipe

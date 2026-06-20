@@ -36,18 +36,24 @@ python install_requirements.py --with-local      # torch + diffusers-from-source
 hf download Tongyi-MAI/Z-Image-Turbo              # ~6B weights; note the local path
 export DEFORUM_BACKEND=local                      # or set backend in ModelSetup
 # optional: export ZIMAGE_LOCAL_PATH=/path/to/Z-Image-Turbo   # skip re-download
-# optional: export ZIMAGE_QUANTIZE=int8            # ~11GB resident vs ~20GB bf16 (needs bitsandbytes)
+# optional: export ZIMAGE_QUANTIZE=int8            # only if memory-bound; see "VRAM" below
 python -m pytest tests/ -q                         # sanity: mocked suite should still pass
 ```
 
-### Low-VRAM option (24GB cards)
+### VRAM (24GB cards)
 
-The bf16 pipeline is ~20GB resident, leaving little headroom (interpolation/guidance can
-OOM, and a 2D animation loads txt2img+img2img ~= 40GB). Set `ZIMAGE_QUANTIZE=int8` (or
-`nf4`) to quantize the transformer **and** text encoder via bitsandbytes: ~11GB (int8) /
-~7GB (nf4) resident, which clears the headroom problems. Note: on Ampere (A5000, sm_86)
-there's no native int8/fp8 *compute*, so matmuls dequantize to bf16 — this is a memory
-lever, not a speed one (generation is ~2x slower). Default (unset) keeps full bf16.
+Default is **full bf16** (~20GB resident, fastest). `_load_pipe` **shares components** across
+kinds (txt2img/img2img/inpaint reuse one copy of the transformer/text-encoder/vae via
+`from_pipe`), so a 2D animation stays ~20GB instead of ~40GB — full-precision animation fits
+a 24GB card at full speed. No need to quantize just to run animations.
+
+If you're still memory-bound (e.g. very tight cards, or stacking guidance + interpolation),
+opt into bitsandbytes weight quantization of the transformer **and** text encoder:
+`ZIMAGE_QUANTIZE=int8` (~11GB, ~bf16 quality) or `nf4` (~6.5GB, lower fidelity to bf16).
+Caveat: on Ampere (A5000, sm_86) there's **no native int8/fp8 compute** — matmuls dequantize
+to bf16, so quant is a *memory* lever, not a speed one. Measured per-image (512², 8 steps):
+bf16 ~3.6s, **int8 ~5.6s (~1.5× slower, steady over a full batch)**, nf4 ~3.9s. So quantize
+only when you actually need the memory.
 
 ## Test sequence
 
