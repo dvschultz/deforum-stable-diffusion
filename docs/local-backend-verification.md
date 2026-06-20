@@ -33,11 +33,32 @@ and anything still broken.
 cd <repo>
 git checkout feat/z-image-turbo-backend && git pull
 python install_requirements.py --with-local      # torch + diffusers-from-source (large)
-hf download Tongyi-MAI/Z-Image-Turbo              # ~6B weights; note the local path
+hf download Tongyi-MAI/Z-Image-Turbo              # ~6B weights
 export DEFORUM_BACKEND=local                      # or set backend in ModelSetup
-# optional: export ZIMAGE_LOCAL_PATH=/path/to/Z-Image-Turbo   # skip re-download
 python -m pytest tests/ -q                         # sanity: mocked suite should still pass
 ```
+
+## Disk / model location (set FIRST if the main drive is tight)
+
+The weights (~6B), CUDA torch wheels, and the conda env are multi-GB and default to the
+home/system drive. If that drive is full, redirect them to an SSD **before** installing or
+downloading — set these in the shell (or the conda env's activate script) so the install,
+the download, AND every generation run all see the SSD:
+
+```bash
+export HF_HOME=/mnt/ssd/hf            # redirects ALL HuggingFace downloads (model + sub-components)
+export PIP_CACHE_DIR=/mnt/ssd/pipcache
+# conda env on the SSD too:
+conda create -p /mnt/ssd/envs/dsd-local python=3.11 -y && conda activate /mnt/ssd/envs/dsd-local
+```
+
+- `HF_HOME` is the robust lever: with it set, `hf download Tongyi-MAI/Z-Image-Turbo` and the
+  default `from_pretrained("Tongyi-MAI/Z-Image-Turbo")` both resolve from the SSD — no code
+  or path arg needed. It also catches any auxiliary repos diffusers pulls (text encoder, etc.).
+- Explicit alternative: `hf download Tongyi-MAI/Z-Image-Turbo --local-dir /mnt/ssd/Z-Image-Turbo`
+  then `export ZIMAGE_LOCAL_PATH=/mnt/ssd/Z-Image-Turbo` (the loader honors it). Keep `HF_HOME`
+  set as well in case a sub-component isn't bundled in that dir.
+- Verify before pulling 6B: `df -h /mnt/ssd` (need ~20–30 GB headroom for weights + torch).
 
 ## Test sequence
 
