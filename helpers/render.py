@@ -2,7 +2,6 @@ import os
 import json
 from IPython import display
 import random
-from torchvision.utils import make_grid
 from einops import rearrange
 import pandas as pd
 os.environ["OPENCV_IO_ENABLE_OPENEXR"]="1"
@@ -10,17 +9,17 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 import pathlib
-import torchvision.transforms as T
+
+# torch-backed imports (torchvision make_grid, the MiDaS DepthModel) are loaded
+# lazily inside the branches that use them, so 2D / image-batch runs stay torch-free.
 
 from .generate import generate, add_noise
 from .prompt import sanitize
 from .animation import DeformAnimKeys, sample_from_cv2, sample_to_cv2, anim_frame_warp, vid2frames
-from .depth import DepthModel
 from .colors import maintain_colors
 from .load_images import prepare_overlay_mask
 from .hybrid_video import hybrid_generation, hybrid_composite
 from .hybrid_video import get_matrix_for_hybrid_motion, get_matrix_for_hybrid_motion_prev, get_flow_for_hybrid_motion, get_flow_for_hybrid_motion_prev, image_transform_ransac, image_transform_optical_flow
-from .interpolation import interpolate
 
 try:
     from numpngw import write_png
@@ -134,7 +133,6 @@ def render_image_batch(root, args, cond_prompts, uncond_prompts):
     for iprompt, (cond_prompt, uncond_prompt) in enumerate(zip(cond_prompts,uncond_prompts)):
         args.cond_prompt = cond_prompt
         args.uncond_prompt = uncond_prompt
-        args.clip_prompt = cond_prompt
         print(f"Prompt {iprompt+1} of {len(cond_prompts)}")
         print(f"cond_prompt: {args.cond_prompt}")
         print(f"uncond_prompt: {args.uncond_prompt}")
@@ -151,6 +149,7 @@ def render_image_batch(root, args, cond_prompts, uncond_prompts):
                 results = generate(args, root)
                 for image in results:
                     if args.make_grid:
+                        import torchvision.transforms as T
                         all_images.append(T.functional.pil_to_tensor(image))
                     if args.save_samples:
                         if args.filename_format == "{timestring}_{index}_{prompt}.png":
@@ -167,6 +166,7 @@ def render_image_batch(root, args, cond_prompts, uncond_prompts):
 
         #print(len(all_images))
         if args.make_grid:
+            from torchvision.utils import make_grid
             grid = make_grid(all_images, nrow=int(len(all_images)/args.grid_rows))
             grid = rearrange(grid, 'c h w -> h w c').cpu().numpy()
             filename = f"{args.timestring}_{iprompt:05d}_grid_{args.seed}.png"
@@ -248,6 +248,7 @@ def render_animation(root, anim_args, args, cond_prompts, uncond_prompts):
     predict_depths = (anim_args.animation_mode == '3D' and anim_args.use_depth_warping) or anim_args.save_depth_maps
     predict_depths = predict_depths or (anim_args.hybrid_composite and anim_args.hybrid_comp_mask_type in ['Depth','Video Depth'])
     if predict_depths:
+        from .depth import DepthModel  # torch-backed; only loaded when depth is needed
         depth_model = DepthModel(root.device)
         depth_model.load_midas(root.models_path)
         if anim_args.midas_weight < 1.0:
@@ -300,9 +301,6 @@ def render_animation(root, anim_args, args, cond_prompts, uncond_prompts):
             "mask_auto_contrast_cutoff_low": int(keys.hybrid_comp_mask_auto_contrast_cutoff_low_schedule_series[frame_idx]),
             "mask_auto_contrast_cutoff_high": int(keys.hybrid_comp_mask_auto_contrast_cutoff_high_schedule_series[frame_idx]),
         }
-        sampler_name = None
-        if anim_args.enable_schedule_samplers:
-            sampler_name = keys.sampler_schedule_series[frame_idx]
         depth = None
         
         # emit in-between frames
@@ -359,7 +357,7 @@ def render_animation(root, anim_args, args, cond_prompts, uncond_prompts):
                 if args.use_mask and args.overlay_mask:
                     # Apply transforms to the original image
                     init_image_raw, _ = anim_frame_warp(args.init_sample_raw, args, anim_args, keys, frame_idx, depth_model, depth, device=root.device)
-                    args.init_sample_raw = sample_from_cv2(init_image_raw).half().to(root.device)
+                    args.init_sample_raw = sample_from_cv2(init_image_raw)
 
                 #Transform the mask image
                 if args.use_mask:
@@ -367,7 +365,7 @@ def render_animation(root, anim_args, args, cond_prompts, uncond_prompts):
                         args.mask_sample = prepare_overlay_mask(args, root, prev_sample.shape)
                     # Transform the mask
                     mask_image, _ = anim_frame_warp(args.mask_sample, args, anim_args, keys, frame_idx, depth_model, depth, device=root.device)
-                    args.mask_sample = sample_from_cv2(mask_image).half().to(root.device)
+                    args.mask_sample = sample_from_cv2(mask_image)
 
                 turbo_prev_frame_idx = turbo_next_frame_idx = tween_frame_idx
 
@@ -418,7 +416,7 @@ def render_animation(root, anim_args, args, cond_prompts, uncond_prompts):
             if args.use_mask and args.overlay_mask:
                 # Apply transforms to the original image
                 init_image_raw, _ = anim_frame_warp(args.init_sample_raw, args, anim_args, keys, frame_idx, depth_model, depth, device=root.device)
-                args.init_sample_raw = sample_from_cv2(init_image_raw).half().to(root.device)
+                args.init_sample_raw = sample_from_cv2(init_image_raw)
 
             #Transform the mask image
             if args.use_mask:
@@ -426,7 +424,7 @@ def render_animation(root, anim_args, args, cond_prompts, uncond_prompts):
                     args.mask_sample = prepare_overlay_mask(args, root, prev_sample.shape)
                 # Transform the mask
                 mask_sample, _ = anim_frame_warp(args.mask_sample, args, anim_args, keys, frame_idx, depth_model, depth, device=root.device)
-                args.mask_sample = sample_from_cv2(mask_sample).half().to(root.device)
+                args.mask_sample = sample_from_cv2(mask_sample)
             
             # apply color matching
             if anim_args.color_coherence != 'None':
@@ -458,26 +456,18 @@ def render_animation(root, anim_args, args, cond_prompts, uncond_prompts):
 
             # use transformed previous frame as init for current
             args.use_init = True
-            args.init_sample = noised_sample.half().to(root.device)
+            args.init_sample = noised_sample
             args.strength = max(0.0, min(1.0, strength))
 
         # grab prompt for current frame
         args.cond_prompt = cond_prompt_series[frame_idx]
         args.uncond_prompt = uncond_prompt_series[frame_idx]
-        args.clip_prompt = cond_prompt_series[frame_idx]
         print(f"seed: {args.seed}")
         print(f"cond_prompt: {args.cond_prompt}")
         print(f"uncond_prompt: {args.uncond_prompt}")
 
-        # assign sampler_name to args.sampler
-        available_samplers = ["klms","dpm2","dpm2_ancestral","heun","euler","euler_ancestral", "dpm_fast", "dpm_adaptive", "dpmpp_2s_a", "dpmpp_2m"]
-        if sampler_name is not None:
-            if sampler_name in available_samplers:
-                args.sampler = sampler_name
-
         # print run info
         if not using_vid_init:
-            print(f"Sampler: {args.sampler}")
             print(f"Angle: {keys.angle_series[frame_idx]} Zoom: {keys.zoom_series[frame_idx]}")
             print(f"Tx: {keys.translation_x_series[frame_idx]} Ty: {keys.translation_y_series[frame_idx]} Tz: {keys.translation_z_series[frame_idx]}")
             print(f"Rx: {keys.rotation_3d_x_series[frame_idx]} Ry: {keys.rotation_3d_y_series[frame_idx]} Rz: {keys.rotation_3d_z_series[frame_idx]}")
@@ -576,109 +566,78 @@ def render_interpolation(root, anim_args, args, cond_prompts, uncond_prompts):
     with open(settings_filename, "w+", encoding="utf-8") as f:
         s = {**dict(args.__dict__), **dict(anim_args.__dict__)}
         json.dump(s, f, ensure_ascii=False, indent=4)
-    
+
     # Interpolation Settings
     args.n_samples = 1
     args.seed_behavior = 'fixed' # force fix seed at the moment bc only 1 seed is available
-    prompts_c_s = [] # cache all the text embeddings
 
-    print(f"Preparing for interpolation of the following...")
+    # Backend decides HOW we interpolate:
+    #   local: slerp the text embeddings (true semantic morph) -- prompt_embeds.
+    #   fal:   the hosted API exposes no embeddings, so cross-dissolve rendered
+    #          key frames in pixel space (documented substitute).
+    from .backends import resolve_backend_name
+    is_local = resolve_backend_name(root) == "local"
+    key_embeds = None
+    if is_local:
+        from .zimage_local import encode_prompt, slerp_embeds, txt2img_embeds
+        key_embeds = [encode_prompt(p) for p in cond_prompts.values()]
 
+    key_images = []
+    print(f"Rendering key frames for interpolation...")
     for i, prompt in cond_prompts.items():
-        
         args.cond_prompt = prompt
-        args.clip_prompt = args.cond_prompt
-
-        # sample the diffusion model
-        results = generate(args, root, return_c=True)
-        c, image = results[0], results[1]
-        prompts_c_s.append(c) 
-      
-        # Convert image to 8bpc to display
-        if args.bit_depth_output != 8: 
-            image = convert_image_to_8bpc(image, args.bit_depth_output) 
-      
-        # display.clear_output(wait=True)
+        args.use_init = False
+        args.init_sample = None
+        results = generate(args, root)
+        image = results[0]
+        key_images.append(image)
+        if args.bit_depth_output != 8:
+            image = convert_image_to_8bpc(image, args.bit_depth_output)
         display.display(image)
-      
         args.seed = next_seed(args)
+
+    if not key_images:
+        print("No key prompts provided; nothing to interpolate.")
+        return
 
     display.clear_output(wait=True)
     print(f"Interpolation start...")
 
+    def _save_and_show(image, idx):
+        filename = f"{args.timestring}_{idx:05}.png"
+        save_8_16_or_32bpc_image(image, args.outdir, filename, args.bit_depth_output)
+        disp = convert_image_to_8bpc(image, args.bit_depth_output) if args.bit_depth_output != 8 else image
+        display.clear_output(wait=True)
+        display.display(disp)
+
+    def _interp_frame(i, t):
+        # local: generate from slerped embeddings (semantic morph);
+        # fal: cross-dissolve the two rendered key frames (pixel blend).
+        if is_local:
+            emb = slerp_embeds(key_embeds[i], key_embeds[i + 1], t)
+            return txt2img_embeds(emb, args.W, args.H, seed=args.seed, steps=args.steps,
+                                  guidance_scale=getattr(args, "guidance_scale", 5.0))[0]
+        return Image.blend(key_images[i].convert("RGB"), key_images[i + 1].convert("RGB"), t)
+
     frame_idx = 0
 
     if anim_args.interpolate_key_frames:
-        for i in range(len(prompts_c_s)-1):
-            dist_frames = list(cond_prompts.items())[i+1][0] - list(cond_prompts.items())[i][0]
+        key_list = list(cond_prompts.items())
+        for i in range(len(key_images) - 1):
+            dist_frames = key_list[i + 1][0] - key_list[i][0]
             if dist_frames <= 0:
                 print("key frames duplicated or reversed. interpolation skipped.")
                 return
-        else:
             for j in range(dist_frames):
-                # interpolate the text embedding
-                prompt1_c = prompts_c_s[i]
-                prompt2_c = prompts_c_s[i+1]
-                t = j * 1.0 / dist_frames
-                args.init_c = interpolate(t, prompt1_c, prompt2_c, mode="slerp")
-
-                # sample the diffusion model
-                results = generate(args, root)
-                image = results[0]
-
-                filename = f"{args.timestring}_{frame_idx:05}.png"
-                # Save image to 8bpc or 16bpc
-                save_8_16_or_32bpc_image(image, args.outdir, filename, args.bit_depth_output)
+                _save_and_show(_interp_frame(i, j * 1.0 / dist_frames), frame_idx)
                 frame_idx += 1
-
-                # Convert image to 8bpc to display
-                if args.bit_depth_output != 8: 
-                    image = convert_image_to_8bpc(image, args.bit_depth_output) 
-
-                display.clear_output(wait=True)
-                display.display(image)
-
-                args.seed = next_seed(args)
-
     else:
-        for i in range(len(prompts_c_s)-1):
-            for j in range(anim_args.interpolate_x_frames+1):
-                # interpolate the text embedding
-                prompt1_c = prompts_c_s[i]
-                prompt2_c = prompts_c_s[i+1]  
-                args.init_c = prompt1_c.add(prompt2_c.sub(prompt1_c).mul(j * 1/(anim_args.interpolate_x_frames+1)))
-
-                # sample the diffusion model
-                results = generate(args, root)
-                image = results[0]
-
-                filename = f"{args.timestring}_{frame_idx:05}.png"
-                save_8_16_or_32bpc_image(image, args.outdir, filename, args.bit_depth_output)
+        steps = anim_args.interpolate_x_frames + 1
+        for i in range(len(key_images) - 1):
+            for j in range(steps):
+                _save_and_show(_interp_frame(i, j * 1.0 / steps), frame_idx)
                 frame_idx += 1
 
-                # Convert image to 8bpc to display
-                if args.bit_depth_output != 8: 
-                    image = convert_image_to_8bpc(image, args.bit_depth_output) 
-
-                display.clear_output(wait=True)
-                display.display(image)
-
-                args.seed = next_seed(args)
-
-    # generate the last prompt
-    args.init_c = prompts_c_s[-1]
-    results = generate(args, root)
-    image = results[0]
-    filename = f"{args.timestring}_{frame_idx:05}.png"
-    save_8_16_or_32bpc_image(image, args.outdir, filename, args.bit_depth_output)
-
-    # Convert image to 8bpc to display
-    if args.bit_depth_output != 8: 
-        image = convert_image_to_8bpc(image, args.bit_depth_output) 
-
-    display.clear_output(wait=True)
-    display.display(image)
+    # final key frame
+    _save_and_show(key_images[-1], frame_idx)
     args.seed = next_seed(args)
-
-    #clear init_c
-    args.init_c = None

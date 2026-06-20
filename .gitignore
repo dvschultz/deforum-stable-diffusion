@@ -9,6 +9,9 @@ cc-outputs.log
 # Jupyter autosaves
 .ipynb_checkpoints/
 
+# Secrets (fal.ai API key). Keep .env.example tracked, never .env
+.env
+
 # Output Images
 output/
 outputs/

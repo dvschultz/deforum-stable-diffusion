@@ -1,9 +1,12 @@
+from __future__ import annotations  # defer annotation eval so torch isn't needed at import
 from typing import List, Tuple
 from einops import rearrange
-import numpy as np, os, torch
+import numpy as np, os
 from PIL import Image
-from torchvision.utils import make_grid
 import time
+
+# torch / torchvision are imported lazily inside save_samples so get_output_folder
+# (the only export used by the live path) stays torch-free.
 
 
 def get_output_folder(output_path, batch_folder):
@@ -27,6 +30,9 @@ def save_samples(
         A tuple of the grid image and a list of the generated images.
         ( grid_image, generated_images )
     """
+
+    import torch
+    from torchvision.utils import make_grid
 
     # save samples
     images = []

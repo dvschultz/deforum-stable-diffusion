@@ -2,26 +2,29 @@ import numpy as np
 import cv2
 from functools import reduce
 import math
-import py3d_tools as p3d
-import torch
 from einops import rearrange
 import re
 import pathlib
 import os
 import pandas as pd
 
+# torch and py3d_tools are imported lazily inside anim_frame_warp_3d so the 2D
+# animation path (and the whole render -> generate chain) stays torch-free.
+
 def check_is_number(value):
     float_pattern = r'^(?=.)([+-]?([0-9]*)(\.([0-9]+))?)$'
     return re.match(float_pattern, value)
 
-def sample_from_cv2(sample: np.ndarray) -> torch.Tensor:
-    sample = ((sample.astype(float) / 255.0) * 2) - 1
-    sample = sample[None].transpose(0, 3, 1, 2).astype(np.float16)
-    sample = torch.from_numpy(sample)
+def sample_from_cv2(sample: np.ndarray) -> np.ndarray:
+    # cv2 HWC uint8 -> [-1,1] float32, shape [1,3,H,W]. The "sample" is just a
+    # pixel buffer threaded through the warp loop; it no longer needs to be a tensor.
+    sample = ((sample.astype(np.float32) / 255.0) * 2) - 1
+    sample = sample[None].transpose(0, 3, 1, 2).astype(np.float32)
     return sample
 
-def sample_to_cv2(sample: torch.Tensor, type=np.uint8) -> np.ndarray:
-    sample_f32 = rearrange(sample.squeeze().cpu().numpy(), "c h w -> h w c").astype(np.float32)
+def sample_to_cv2(sample: np.ndarray, type=np.uint8) -> np.ndarray:
+    arr = np.asarray(sample)
+    sample_f32 = rearrange(arr.squeeze(), "c h w -> h w c").astype(np.float32)
     sample_f32 = ((sample_f32 * 0.5) + 0.5).clip(0, 1)
     sample_int8 = (sample_f32 * 255)
     return sample_int8.astype(type)
@@ -163,8 +166,13 @@ def warpMatrix(W, H, theta, phi, gamma, scale, fV):
     return M33, sideLength
 
 def anim_frame_warp(prev, args, anim_args, keys, frame_idx, depth_model=None, depth=None, device='cuda'):
-    if isinstance(prev, np.ndarray):
-        prev_img_cv2 = prev
+    # Distinguish by ndim, not type: a 3-dim array is already an HWC cv2 image
+    # (the turbo/tween path passes those directly); a 4-dim [1,3,H,W] array is a
+    # sample buffer that must be decoded to HWC uint8 first. (Samples used to be
+    # torch tensors, so this was an isinstance check; they're numpy now.)
+    arr = np.asarray(prev)
+    if arr.ndim == 3:
+        prev_img_cv2 = arr
     else:
         prev_img_cv2 = sample_to_cv2(prev)
 
@@ -213,6 +221,9 @@ def anim_frame_warp_2d(prev_img_cv2, args, anim_args, keys, frame_idx):
     )
 
 def anim_frame_warp_3d(device, prev_img_cv2, depth, anim_args, keys, frame_idx):
+    # Imported here (not at module top) so 2D animations never require torch.
+    import torch
+    import py3d_tools as p3d
     TRANSLATION_SCALE = 1.0/200.0 # matches Disco
     translate_xyz = [
         -keys.translation_x_series[frame_idx] * TRANSLATION_SCALE, 
@@ -289,7 +300,6 @@ class DeformAnimKeys():
         self.noise_schedule_series = get_inbetweens(parse_key_frames(anim_args.noise_schedule), anim_args.max_frames)
         self.strength_schedule_series = get_inbetweens(parse_key_frames(anim_args.strength_schedule), anim_args.max_frames)
         self.contrast_schedule_series = get_inbetweens(parse_key_frames(anim_args.contrast_schedule), anim_args.max_frames)
-        self.sampler_schedule_series = get_inbetweens(parse_key_frames(anim_args.sampler_schedule), anim_args.max_frames, is_single_string = True)
         self.kernel_schedule_series = get_inbetweens(parse_key_frames(anim_args.kernel_schedule), anim_args.max_frames)
         self.sigma_schedule_series = get_inbetweens(parse_key_frames(anim_args.sigma_schedule), anim_args.max_frames)
         self.amount_schedule_series = get_inbetweens(parse_key_frames(anim_args.amount_schedule), anim_args.max_frames)
