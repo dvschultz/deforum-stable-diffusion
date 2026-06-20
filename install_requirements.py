@@ -55,7 +55,7 @@ CORE = [
     "scipy",
     "numexpr",
     "numpngw",
-    "scikit-image==0.19.3",   # colors.maintain_colors (match_histograms)
+    "scikit-image>=0.24",   # colors.maintain_colors (match_histograms); >=0.24 for numpy 2 compat
     "pydantic",
     "colab-convert",
     "ipython",
@@ -89,6 +89,7 @@ LOCAL = [
     "sentencepiece",
     "ftfy",
     "regex",   # ftfy + the vendored CLIP (used by experimental gradient guidance)
+    "scikit-learn",   # conditioning.KMeans color-palette loss (experimental gradient guidance)
 ]
 PYTORCH_INDEX = "https://download.pytorch.org/whl/nightly/cu121"
 
