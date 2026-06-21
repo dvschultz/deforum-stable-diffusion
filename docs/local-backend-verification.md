@@ -134,9 +134,15 @@ Generate the same prompt/seed three ways and compare:
 
 **Expected reality:** guidance may do little at 8 steps. Report whether the image visibly
 shifts toward the guidance target, and whether more steps help. If it does nothing even at
-high steps, that confirms the plan's risk note — document it; don't force it. CLIP/aesthetic
-guidance also need their models loaded on `root` (`clip_scale>0` must load `root.clip_model`);
-if guidance silently no-ops, check that wiring in the entry/predict setup.
+high steps, that confirms the plan's risk note — document it; don't force it.
+
+`clip_scale`/`aesthetics_scale` load their models onto `root` automatically:
+`local_guidance._ensure_guidance_models` pulls the vendored CLIP (and the aesthetic
+predictor) when those scales are set, and defaults the CLIP target (`clip_prompt`) to the
+generation prompt. Verified: `clip_scale=5000` toward a different target text moves the
+image toward it in CLIP space (+0.13 cosine). **Memory:** CLIP guidance backprops through
+both the VAE decode and CLIP, so it peaks near 24GB at 448² — drop the resolution or set
+`ZIMAGE_QUANTIZE=int8` to free room.
 
 ## If something breaks
 
