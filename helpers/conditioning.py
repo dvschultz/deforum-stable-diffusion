@@ -76,6 +76,7 @@ def make_clip_loss_fn(root, args):
     def clip_loss_fn(x, sigma, **kwargs):
         nonlocal target_embeds, weights, make_cutouts, normalize
         clip_in = normalize(make_cutouts(x.add(1).div(2)))
+        clip_in = clip_in.to(next(root.clip_model.parameters()).dtype)  # bf16 decode -> CLIP dtype (fp16)
         image_embeds = root.clip_model.encode_image(clip_in).float()
         dists = spherical_dist_loss(image_embeds[:, None], target_embeds[None])
         dists = dists.view([args.cutn, 1, -1])
@@ -89,6 +90,7 @@ def make_aesthetics_loss_fn(root,args):
 
     def aesthetics_cond_fn(x, sigma, **kwargs):
         clip_in = F.interpolate(x, (clip_size, clip_size))
+        clip_in = clip_in.to(next(root.clip_model.parameters()).dtype)  # bf16 decode -> CLIP dtype (fp16)
         image_embeds = root.clip_model.encode_image(clip_in).float()
         losses = (10 - root.aesthetics_model(image_embeds)[0])
         return losses.sum()

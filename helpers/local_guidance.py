@@ -34,6 +34,24 @@ def apply_latent_guidance(latents, decode_fn, loss_fn, scale=1.0, clamp=None):
     return latents.detach() - grad
 
 
+def _ensure_guidance_models(args, root):
+    """Load the models CLIP/aesthetic guidance needs onto ``root`` -- only when those scales
+    are set, and only once. Without this ``root.clip_model`` is never populated on the local
+    path, so build_guidance_loss silently drops the CLIP/aesthetic losses (they no-op). The
+    model-free losses (blue/mean/var/exposure) need nothing here."""
+    wants_clip = bool(getattr(args, "clip_scale", 0)) or bool(getattr(args, "aesthetics_scale", 0))
+    if wants_clip and getattr(root, "clip_model", None) is None:
+        import clip  # vendored (src/clip); also imported by helpers.conditioning
+        name = getattr(args, "clip_name", "ViT-L/14")
+        root.clip_model = clip.load(name, jit=False, device=root.device)[0].eval().requires_grad_(False)
+    if getattr(args, "aesthetics_scale", 0) and getattr(root, "aesthetics_model", None) is None:
+        from .aesthetics import load_aesthetics_model
+        root.aesthetics_model = load_aesthetics_model(args, root).eval().requires_grad_(False)
+    # CLIP guidance target text: default to the generation prompt when none is given.
+    if getattr(args, "clip_scale", 0) and not getattr(args, "clip_prompt", None):
+        args.clip_prompt = [getattr(args, "cond_prompt", "") or ""]
+
+
 def build_guidance_loss(args, root):
     """Combine the active conditioning losses into one image->scalar loss, or None.
 
@@ -74,6 +92,7 @@ def make_guidance_callback(args, root):
     """Build a callback_on_step_end that applies gradient guidance, or None when no
     conditioning scale is set. The callback uses the pipe (its first arg) to decode
     latents, so it needs nothing from generate() beyond args/root."""
+    _ensure_guidance_models(args, root)  # load CLIP/aesthetics onto root if those scales are set
     loss_fn = build_guidance_loss(args, root)
     if loss_fn is None:
         return None
