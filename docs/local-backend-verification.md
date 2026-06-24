@@ -2,6 +2,38 @@
 
 **Read this into Claude on the GPU box to drive full validation of the local backend.**
 
+## Validation results (complete)
+
+Run on 2× NVIDIA RTX A5000 (24 GB, Ampere/sm_86), diffusers-from-source, torch 2.6.0+cu124.
+**All steps pass**, and the feared diffusers `ZImage*` API drift did **not** materialize — the
+kwarg contract holds. Merged to `main` via PR #1 and PR #2.
+
+| Step | Result |
+|---|---|
+| 1. Pipeline loads | ✅ `ZImagePipeline`, cuda, bf16, ~11 s |
+| 2. txt2img | ✅ 512², ~16 s — kwarg contract holds (no API drift) |
+| 3. img2img + strength | ✅ faithful variation; Deforum 0.65 → diffusers 0.35 inversion correct |
+| 4. inpaint | ✅ masked center changed ~10× vs edges (preserved) |
+| 5. 2D animation (render loop) | ✅ coherent motion; fits 24 GB via component sharing (peak ~21 GB) |
+| 6. true 16-bit (+ 32-bit) | ✅ 16-bit PNG (IHDR=16, max 65279); 32-bit `.exr` (float32) also confirmed |
+| 7. per-step previews + threshold | ✅ after fix (below); 8 previews, thresholding stable |
+| 8. interpolation | ✅ local = **semantic morph** (~70/255 from a pixel blend); fal = **pixel cross-dissolve** (~0.2) |
+| 9. gradient guidance | ✅ model-free steers (blue +11 @8 steps, +27.6 @30); **CLIP wired & steers** (+0.13 cosine to a target text) |
+
+### Bugs found on hardware and fixed
+- **`zimage_local._make_step_callback`** (step 7) — per-step preview VAE-decode missed the dtype cast + `shift_factor` (fp32 latents vs bf16 VAE); error was swallowed → zero previews.
+- **`zimage_local.encode_prompt`** (step 8) — ran the text encoder without `torch.no_grad()`, leaking the ~3.4 GB activation graph → OOM'd interpolation.
+- **`zimage_local.txt2img_embeds`** (step 8) — passed CFG with only positive embeds, which the pipeline rejects; forced CFG-free.
+- **`local_guidance.decode_fn`** (step 9) — same dtype+shift bug (differentiable variant).
+- **`install_requirements.py`** — `scikit-image==0.19.3` is numpy-2-incompatible (→ `>=0.24`) and `scikit-learn` was undeclared. The box also needed a CUDA-12.4 torch build (cu124, **not** cu130) and `pytest`.
+
+### Added during validation
+- **CLIP/aesthetic guidance wiring** — `clip_scale`/`aesthetics_scale` now load `root.clip_model` / `root.aesthetics_model` (previously a silent no-op).
+- **Component sharing** in `_load_pipe` — kinds reuse one copy of the weights, so animation fits 24 GB at full bf16 speed (~21 GB vs ~40 GB). See "VRAM" below.
+- **Opt-in quantization** (`ZIMAGE_QUANTIZE=int8`/`nf4`) — ~11 GB / ~6.5 GB resident for memory-bound runs (a memory lever only on Ampere; int8 ~1.5× slower).
+
+Mocked suite stays green throughout (71 passed). Nothing outstanding from this runbook.
+
 ## What this is
 
 The local Z-Image backend (`backend='local'`) was built and **unit-tested with the
@@ -10,8 +42,8 @@ knob-gating, callback composition, grad-math, the fal path staying torch-free) b
 **not** that the real diffusers `ZImage*` pipeline accepts the kwargs `helpers/zimage_local.py`
 passes, nor that any feature actually works on hardware. This runbook closes that gap.
 
-Branch: `feat/z-image-turbo-backend` (PR #1 on the `dvschultz` fork). The default `fal`
-backend is fully verified and unaffected — everything here is the opt-in local path.
+Now merged to `main` (PR #1 + follow-up PR #2). The default `fal` backend is fully verified
+and unaffected — everything here is the opt-in local path.
 
 **Highest-likelihood failure: diffusers API drift.** The ZImage pipelines aren't in a
 stable diffusers release, so a `__call__`/`encode_prompt` parameter name in
