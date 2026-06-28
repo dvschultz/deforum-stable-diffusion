@@ -63,6 +63,35 @@ points force guidance to 0.0 (a non-zero request prints a one-time note). The ex
 gradient-conditioning guidance (CLIP/aesthetic) is **not** wired for Krea 2 (its latents
 are packed); use Z-Image for that.
 
+## Animation strength (smoothness) — Krea 2 wants a higher value than Z-Image
+
+For img2img animation, Deforum `strength` (higher = keep more of the previous frame =
+smoother/more coherent) is inverted to a diffusers strength and maps to a *number of
+denoise steps*. At `steps=8` that mapping is coarse — `t_start = int(8 * strength)`, so
+strength only changes the result when it crosses an integer step boundary:
+
+| Deforum strength | denoise steps run |
+|---|---|
+| ≤ 0.625 | 4 |
+| 0.625–0.75 | 3 |
+| 0.75–0.875 | 2 |
+| ≥ 0.875 | 1 |
+
+(e.g. 0.78 and 0.85 are identical in regime — both 2 steps.) Fewer steps = less change
+per frame = smoother (and slightly softer / slower-evolving).
+
+**Krea 2 is intrinsically busier than Z-Image at the same step count** (12.9B and CFG-free,
+so it re-draws more per frame than CFG-anchored Z-Image). So for equivalent animation
+smoothness they want different values:
+
+- **Z-Image:** `strength ≈ 0.70` (3 steps) is smooth.
+- **Krea 2:** use `strength ≈ 0.78` (drops to the 2-step regime) to match it. 0.70 on Krea 2
+  reads noticeably jittier.
+
+If you need finer strength control or more detail back, raise total `steps` (e.g. 12–16);
+that gives more step buckets and more denoising headroom. Validated by a strength sweep on
+the abstract-16mm animation (GPU, nf4).
+
 ## License
 
 Krea 2 weights are under the **Krea 2 Community License** — review its terms before use
