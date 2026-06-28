@@ -5,6 +5,12 @@ PIL images) so helpers.generate routes to either backend uniformly. This module
 imports torch and (lazily) diffusers, so it must only be imported when the local
 backend is selected -- helpers.backends.resolve_backend handles that.
 
+The generic machinery (device/dtype, quantization, lazy loading with component
+sharing, thresholding/preview callbacks, common kwargs) lives in
+helpers._diffusers_local and is shared with the Krea 2 local backend; this module
+is a thin adapter that binds the Z-Image :class:`ModelSpec` and keeps the public
+function names the rest of the codebase (and the tests) reference.
+
 EXPERIMENTAL / opt-in. Requires a CUDA GPU, diffusers-from-source, and the
 Z-Image-Turbo weights (see install_requirements.py --with-local). Real generation
 cannot be validated without that hardware; the unit tests mock the pipeline.
@@ -20,6 +26,8 @@ import os
 
 import torch
 
+from . import _diffusers_local as D
+from ._diffusers_local import ModelSpec
 from .zimage_client import to_fal_strength  # pure, torch-free; reused for strength inversion
 
 # Weights: a HF id or a local path (set ZIMAGE_LOCAL_PATH to a downloaded dir).
@@ -30,193 +38,34 @@ _PIPE_CLASSES = {
     "img2img": "ZImageImg2ImgPipeline",
     "inpaint": "ZImageInpaintPipeline",
 }
-_PIPES = {}  # kind -> loaded pipeline (cached)
+
+SPEC = ModelSpec(
+    name="z-image",
+    model_id=MODEL_ID,
+    pipe_classes=_PIPE_CLASSES,
+    default_steps=8,
+    default_guidance=5.0,
+    vae_norm="shift_scale",
+    quant_env_vars=("ZIMAGE_QUANTIZE",),
+)
+
+_PIPES = {}  # kind -> loaded pipeline (cached); this model's own cache
 
 
-def _device():
-    return "cuda" if torch.cuda.is_available() else "cpu"
-
-
-def _quant_config():
-    """Optional in-loader weight quantization, OFF by default (full bf16, fastest). Opt in
-    with env ``ZIMAGE_QUANTIZE``: ``int8`` (~11GB resident, ~bf16 quality, but ~1.5x slower
-    per image on Ampere) or ``nf4`` (~6.5GB, near-bf16 speed, lower fidelity to bf16).
-    Quantizes the transformer AND the large text encoder via bitsandbytes. CUDA only.
-
-    On Ampere (A5000, sm_86) there's no native int8/fp8 *compute*, so matmuls dequantize to
-    bf16 -- quantization is a memory lever, not a speed one. Reach for it only when truly
-    memory-bound; component sharing (see _load_pipe) already lets a full-precision animation
-    fit 24GB at full speed. Falls back to bf16 (with a note) if bitsandbytes is missing."""
-    mode = os.environ.get("ZIMAGE_QUANTIZE", "").strip().lower()
-    if mode in ("", "none", "off", "no", "bf16", "0"):
-        return None
-    try:
-        import bitsandbytes  # noqa: F401
-    except Exception:
-        print(f"..ZIMAGE_QUANTIZE={mode} but bitsandbytes is unavailable; loading in bf16. "
-              "Install bitsandbytes (bundled in --with-local) or set ZIMAGE_QUANTIZE=bf16.")
-        return None
-    from diffusers import PipelineQuantizationConfig
-    comps = ["transformer", "text_encoder"]
-    if mode in ("int8", "8bit", "8"):
-        return PipelineQuantizationConfig(
-            quant_backend="bitsandbytes_8bit",
-            quant_kwargs={"load_in_8bit": True},
-            components_to_quantize=comps)
-    if mode in ("int4", "nf4", "4bit", "4"):
-        return PipelineQuantizationConfig(
-            quant_backend="bitsandbytes_4bit",
-            quant_kwargs={"load_in_4bit": True, "bnb_4bit_quant_type": "nf4",
-                          "bnb_4bit_compute_dtype": torch.bfloat16},
-            components_to_quantize=comps)
-    raise ValueError(f"ZIMAGE_QUANTIZE={mode!r} not recognized (use 'int8', 'nf4', or unset).")
-
+# Thin module-level wrappers over the shared core. Kept as real module attributes
+# (not bare re-exports) so tests can monkeypatch e.g. zimage_local._load_pipe.
 
 def _load_pipe(kind):
-    """Load and cache a ZImage pipeline of the given kind."""
-    if kind in _PIPES:
-        return _PIPES[kind]
-    try:
-        import diffusers
-    except ImportError as e:
-        raise RuntimeError(
-            "diffusers is required for the local backend. Install with "
-            "`python install_requirements.py --with-local` "
-            "(pulls torch + diffusers-from-source)."
-        ) from e
-    cls_name = _PIPE_CLASSES[kind]
-    Pipe = getattr(diffusers, cls_name, None)
-    if Pipe is None:
-        raise RuntimeError(
-            f"{cls_name} not found in your diffusers install. The Z-Image pipelines "
-            "require diffusers from source: pip install "
-            "git+https://github.com/huggingface/diffusers.git"
-        )
-    # Share weights across kinds: txt2img/img2img/inpaint are separate pipeline classes but
-    # use the same transformer/text_encoder/vae, so build later kinds from an already-loaded
-    # one's components -- same module objects, no extra VRAM. Without this a 2D animation
-    # (txt2img frame 0 + img2img rest) would hold two ~20GB copies -> ~40GB -> OOM on 24GB.
-    # (We construct directly rather than via from_pipe, which re-runs .to(dtype) over all
-    # ~20GB of modules and spikes memory enough to OOM at the 24GB edge.)
-    if _PIPES:
-        import inspect
-        base = next(iter(_PIPES.values()))
-        expected = set(inspect.signature(Pipe.__init__).parameters) - {"self"}
-        pipe = Pipe(**{k: v for k, v in base.components.items() if k in expected})
-        _PIPES[kind] = pipe
-        return pipe
-    dtype = torch.bfloat16 if _device() == "cuda" else torch.float32
-    quant = _quant_config() if _device() == "cuda" else None
-    if quant is not None:
-        # bitsandbytes places the quantized weights on the GPU itself, and calling .to() on
-        # a quantized model raises -- so move only the non-quantized components (the VAE) to
-        # the device. Cast them to the compute dtype too: otherwise the VAE stays fp32 and
-        # img2img/inpaint's vae.encode(bf16 image) hits a dtype mismatch.
-        pipe = Pipe.from_pretrained(MODEL_ID, torch_dtype=dtype, quantization_config=quant)
-        for comp in pipe.components.values():
-            if isinstance(comp, torch.nn.Module) and not (
-                    getattr(comp, "is_loaded_in_8bit", False)
-                    or getattr(comp, "is_loaded_in_4bit", False)):
-                comp.to(_device(), dtype=dtype)
-    else:
-        pipe = Pipe.from_pretrained(MODEL_ID, torch_dtype=dtype).to(_device())
-    _PIPES[kind] = pipe
-    return pipe
+    """Load and cache a ZImage pipeline of the given kind (with component sharing)."""
+    return D.load_pipe(SPEC, kind, _PIPES)
 
 
-def _generator(seed):
-    if seed is None:
-        return None
-    return torch.Generator(device=_device()).manual_seed(int(seed))
-
-
-def _dynamic_threshold(latents, percentile):
-    # Imagen-style per-step clamp: clamp to the given abs-value percentile, then rescale.
-    import numpy as np
-    s = np.percentile(latents.detach().abs().cpu().numpy(), percentile,
-                      axis=tuple(range(1, latents.ndim)))
-    s = np.maximum(s, 1.0)
-    s = torch.as_tensor(s, device=latents.device, dtype=latents.dtype).view(-1, *([1] * (latents.ndim - 1)))
-    return latents.clamp(-s, s) / s
-
-
-def _make_step_callback(dynamic_threshold=None, static_threshold=None,
-                        save_sample_per_step=False, show_sample_per_step=False,
-                        outdir=None, timestring="", **_ignored):
-    """Build a callback_on_step_end for thresholding + per-step previews, or None.
-
-    Returns a dict to override latents (diffusers pops 'latents' from the return),
-    so threshold clamps actually take effect for the next step.
-    """
-    want = (dynamic_threshold is not None or static_threshold is not None
-            or save_sample_per_step or show_sample_per_step)
-    if not want:
-        return None
-
-    def callback(pipe, step, timestep, cbk):
-        latents = cbk["latents"]
-        if static_threshold is not None:
-            latents = latents.clamp(-static_threshold, static_threshold)
-        if dynamic_threshold is not None:
-            latents = _dynamic_threshold(latents, dynamic_threshold)
-        if save_sample_per_step and outdir:
-            try:
-                import os
-                # Mirror the pipeline's own latent->image decode (denoising keeps
-                # latents in float32 while the VAE is bf16, and this VAE has a
-                # shift_factor): cast to the VAE dtype, unscale, then unshift.
-                lat = latents.to(pipe.vae.dtype)
-                lat = (lat / pipe.vae.config.scaling_factor) + pipe.vae.config.shift_factor
-                img = pipe.image_processor.postprocess(
-                    pipe.vae.decode(lat, return_dict=False)[0],
-                    output_type="pil")[0]
-                img.save(os.path.join(outdir, f"{timestring}_step_{step:03d}.png"))
-            except Exception:
-                pass  # previews are best-effort; never break the render
-        return {"latents": latents}
-
-    return callback
-
-
-def _compose_callbacks(callbacks):
-    """Chain callbacks; each may return {'latents': ...} which the next one sees."""
-    callbacks = [c for c in callbacks if c is not None]
-    if not callbacks:
-        return None
-    if len(callbacks) == 1:
-        return callbacks[0]
-
-    def combined(pipe, step, timestep, cbk):
-        merged = {}
-        for c in callbacks:
-            r = c(pipe, step, timestep, cbk) or {}
-            if "latents" in r:
-                cbk = {**cbk, "latents": r["latents"]}
-            merged.update(r)
-        return merged
-
-    return combined
+def _make_step_callback(**kw):
+    return D.make_step_callback(SPEC, **kw)
 
 
 def _common_kwargs(W, H, seed, steps, num_images, guidance_scale, output_type, kw_extra):
-    kw = dict(
-        height=int(H), width=int(W),
-        num_inference_steps=int(steps),
-        num_images_per_prompt=int(num_images),
-        guidance_scale=float(guidance_scale),
-        generator=_generator(seed),
-        output_type=output_type,
-    )
-    # Compose thresholding/preview (U4) with experimental gradient guidance (U7).
-    callback = _compose_callbacks([
-        _make_step_callback(**kw_extra),
-        kw_extra.get("guidance_callback"),
-    ])
-    if callback is not None:
-        kw["callback_on_step_end"] = callback
-    if kw_extra.get("scheduler") and kw_extra["scheduler"] != "default":
-        pass  # scheduler swap is applied on the pipe at load time; see _load_pipe note
-    return kw
+    return D.common_kwargs(SPEC, W, H, seed, steps, num_images, guidance_scale, output_type, kw_extra)
 
 
 def txt2img(prompt, W, H, seed=None, steps=8, num_images=1,

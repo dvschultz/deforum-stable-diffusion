@@ -36,6 +36,10 @@ Mocked suite stays green throughout (71 passed). Nothing outstanding from this r
 
 ## What this is
 
+> **Krea 2 Turbo** is also selectable as a model (`model=krea2`) on both backends —
+> see [`krea2-local.md`](krea2-local.md). It shares this local infrastructure but adds
+> an experimental custom img2img (12.9B, txt2img-only in diffusers).
+
 The local Z-Image backend (`backend='local'`) was built and **unit-tested with the
 diffusers pipeline mocked** on a Mac with no GPU. That proves the wiring (routing,
 knob-gating, callback composition, grad-math, the fal path staying torch-free) but

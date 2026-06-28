@@ -17,7 +17,7 @@ def test_2d_path_imports_without_torch():
         "    sys.modules[m] = None\n"  # any import of these now raises ImportError
         f"sys.path.insert(0, {os.path.join(root, 'src')!r})\n"
         f"sys.path.insert(0, {root!r})\n"
-        "import helpers.zimage_client, helpers.generate, helpers.animation\n"
+        "import helpers.zimage_client, helpers.krea2_client, helpers.generate, helpers.animation\n"
         "import helpers.load_images, helpers.save_images, helpers.colors\n"
         "import helpers.prompt, helpers.prompts, helpers.hybrid_video, helpers.settings\n"
         # backends + model_load are on the fal path (entry script imports load_model);

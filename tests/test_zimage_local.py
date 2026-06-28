@@ -61,3 +61,11 @@ def test_ignores_local_irrelevant_kwargs(fake):
 def test_num_images_batches(fake):
     out = zl.txt2img("p", 8, 8, num_images=3)
     assert len(out) == 3
+
+
+def test_pipe_caches_are_per_model():
+    # The Z-Image and Krea 2 adapters must keep separate pipeline caches, so two models
+    # loaded in one process never alias each other's transformer/vae.
+    from helpers import krea2_local
+    assert zl._PIPES is not krea2_local._PIPES
+    assert zl.SPEC.name == "z-image" and krea2_local.SPEC.name == "krea2"

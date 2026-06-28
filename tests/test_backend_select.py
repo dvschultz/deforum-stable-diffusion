@@ -70,3 +70,32 @@ def test_generate_default_routes_to_fal(tmp_path, monkeypatch):
     called = _spies(monkeypatch)
     gen.generate(_args(tmp_path), root=None)  # no backend -> fal
     assert called.get("fal") and not called.get("local")
+
+
+def _krea2_spies(monkeypatch):
+    from helpers import krea2_local, krea2_client
+    called = {}
+
+    def mk(tag):
+        def fn(*a, **k):
+            called[tag] = True
+            return [Image.new("RGB", (8, 8))]
+        return fn
+
+    monkeypatch.setattr(krea2_local, "txt2img", mk("k_local"))
+    monkeypatch.setattr(krea2_client, "txt2img", mk("k_fal"))
+    return called
+
+
+def test_generate_routes_krea2_local(tmp_path, monkeypatch):
+    called = _krea2_spies(monkeypatch)
+    gen.generate(_args(tmp_path, backend="local"),
+                 root=SimpleNamespace(backend="local", model_name="krea2"))
+    assert called.get("k_local") and not called.get("k_fal")
+
+
+def test_generate_routes_krea2_fal(tmp_path, monkeypatch):
+    called = _krea2_spies(monkeypatch)
+    gen.generate(_args(tmp_path),
+                 root=SimpleNamespace(backend="fal", model_name="krea2"))
+    assert called.get("k_fal") and not called.get("k_local")

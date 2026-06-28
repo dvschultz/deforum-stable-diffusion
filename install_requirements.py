@@ -74,10 +74,12 @@ THREE_D = [
     "timm",   # MiDaS backbone
 ]
 
-# Optional (EXPERIMENTAL): the local Z-Image backend (backend='local'). Runs the
-# 6B model on your own CUDA GPU instead of fal.ai. Large; needs the weights too:
-#   hf download Tongyi-MAI/Z-Image-Turbo
-# diffusers must be from source -- the ZImage pipelines aren't in a stable release.
+# Optional (EXPERIMENTAL): the local backend (backend='local'). Runs the model on your
+# own CUDA GPU instead of fal.ai. Large; needs the weights too:
+#   hf download Tongyi-MAI/Z-Image-Turbo   (Z-Image Turbo, ~6B)
+#   hf download krea/Krea-2-Turbo          (Krea 2 Turbo, 12.9B, ~26GB)
+# diffusers must be from source -- the ZImage AND Krea2 pipelines aren't in a stable
+# release (Krea2Pipeline needs a recent main; re-run --with-local to upgrade).
 LOCAL = [
     "torch",
     "torchvision",
@@ -108,10 +110,15 @@ def install_requirements(verbose=False, with_3d=False, with_local=False):
         pip_install_packages(THREE_D, extra_index_url=PYTORCH_INDEX, verbose=verbose, pre=True)
 
     if with_local:
-        print("..installing LOCAL Z-Image backend (EXPERIMENTAL; torch + diffusers-from-source)")
+        print("..installing LOCAL backend (EXPERIMENTAL; torch + diffusers-from-source)")
         pip_install_packages(LOCAL, extra_index_url=PYTORCH_INDEX, verbose=verbose, pre=True)
-        print("..now download the weights:  hf download Tongyi-MAI/Z-Image-Turbo")
-        print("..then run with backend='local' (ModelSetup) or DEFORUM_BACKEND=local")
+        print("..now download the weights for the model you want:")
+        print("..  Z-Image Turbo (~6B):    hf download Tongyi-MAI/Z-Image-Turbo")
+        print("..  Krea 2 Turbo (12.9B):   hf download krea/Krea-2-Turbo   (~26GB)")
+        print("..then run with backend='local' (ModelSetup) or DEFORUM_BACKEND=local,")
+        print("..and model='krea2' / DEFORUM_MODEL=krea2 for Krea 2 (default model='z-image').")
+        print("..  Krea 2 is 12.9B: set ZIMAGE_QUANTIZE=nf4 to fit a single 24GB GPU.")
+        print("..  Krea 2 weights are under the Krea 2 Community License.")
 
     if not (with_3d or with_local):
         print("..skipping the torch stack: generation runs on fal.ai (Z-Image Turbo),")

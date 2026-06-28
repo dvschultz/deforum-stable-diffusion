@@ -57,6 +57,11 @@ class Predictor(BasePredictor):
             description="Generation backend: fal (hosted, default) or local (experimental, needs GPU + weights)",
             default="fal", choices=["fal", "local"],
         ),
+        model: str = Input(
+            description="Model: z-image (Z-Image Turbo, default) or krea2 (Krea 2 Turbo, 12.9B; "
+                        "txt2img on fal, txt2img + experimental img2img on local)",
+            default="z-image", choices=["z-image", "krea2"],
+        ),
         num_inference_steps: int = Input(
             description="Inference steps (fal: 1-8; local allows more)", ge=1, le=100, default=8
         ),
@@ -231,9 +236,10 @@ class Predictor(BasePredictor):
             animation_prompts = OrderedDict(sorted(animation_prompts_dict.items()))
 
         root = {"device": self.device, "models_path": "models", "configs_path": "configs",
-                "backend": backend}
-        # Lightweight handle; generate() routes via root.backend (fal default | local).
-        root["model"] = SimpleNamespace(backend=backend)
+                "backend": backend, "model_name": model}
+        # Lightweight handle; generate() routes via root.backend (fal | local) x
+        # root.model_name (z-image | krea2). `root.model` stays the legacy pipeline handle.
+        root["model"] = SimpleNamespace(backend=backend, model_name=model)
         root = SimpleNamespace(**root)
 
         # using some of the default settings for simplicity

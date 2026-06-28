@@ -575,12 +575,15 @@ def render_interpolation(root, anim_args, args, cond_prompts, uncond_prompts):
     #   local: slerp the text embeddings (true semantic morph) -- prompt_embeds.
     #   fal:   the hosted API exposes no embeddings, so cross-dissolve rendered
     #          key frames in pixel space (documented substitute).
-    from .backends import resolve_backend_name
+    from .backends import resolve_backend, resolve_backend_name
     is_local = resolve_backend_name(root) == "local"
     key_embeds = None
+    local_mod = None
     if is_local:
-        from .zimage_local import encode_prompt, slerp_embeds, txt2img_embeds
-        key_embeds = [encode_prompt(p) for p in cond_prompts.values()]
+        # The local module for the active model (zimage_local | krea2_local) exposes the
+        # encode_prompt / slerp_embeds / txt2img_embeds morph surface.
+        local_mod = resolve_backend(root)
+        key_embeds = [local_mod.encode_prompt(p) for p in cond_prompts.values()]
 
     key_images = []
     print(f"Rendering key frames for interpolation...")
@@ -614,9 +617,9 @@ def render_interpolation(root, anim_args, args, cond_prompts, uncond_prompts):
         # local: generate from slerped embeddings (semantic morph);
         # fal: cross-dissolve the two rendered key frames (pixel blend).
         if is_local:
-            emb = slerp_embeds(key_embeds[i], key_embeds[i + 1], t)
-            return txt2img_embeds(emb, args.W, args.H, seed=args.seed, steps=args.steps,
-                                  guidance_scale=getattr(args, "guidance_scale", 5.0))[0]
+            emb = local_mod.slerp_embeds(key_embeds[i], key_embeds[i + 1], t)
+            return local_mod.txt2img_embeds(emb, args.W, args.H, seed=args.seed, steps=args.steps,
+                                            guidance_scale=getattr(args, "guidance_scale", 5.0))[0]
         return Image.blend(key_images[i].convert("RGB"), key_images[i + 1].convert("RGB"), t)
 
     frame_idx = 0

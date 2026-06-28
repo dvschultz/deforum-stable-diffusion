@@ -130,13 +130,19 @@ root.models_path, root.output_path = get_model_output_paths(root)
 # !!   "id": "232_xKcCfIj9"
 # !! }}
 #@markdown **Model Setup**
-#@markdown Generation runs on the hosted Z-Image Turbo model (fal.ai). No local
+#@markdown By default generation runs on the hosted Z-Image Turbo model (fal.ai). No local
 #@markdown checkpoint is downloaded; the FAL_KEY set above is used for auth.
 
 def ModelSetup():
     #@markdown `backend`: "fal" (default, hosted, no GPU) or "local" (experimental,
-    #@markdown needs a CUDA GPU + `--with-local` install + Z-Image weights).
+    #@markdown needs a CUDA GPU + `--with-local` install + model weights).
     backend = "fal" #@param ["fal", "local"]
+    #@markdown `model_name`: "z-image" (Z-Image Turbo, default) or "krea2" (Krea 2 Turbo,
+    #@markdown 12.9B). Krea 2 is text-to-image only on fal; the local backend adds an
+    #@markdown experimental img2img. Local Krea 2 needs ~26GB weights
+    #@markdown (`hf download krea/Krea-2-Turbo`) and `ZIMAGE_QUANTIZE=nf4` to fit a 24GB
+    #@markdown card. Krea 2 is under the Krea 2 Community License.
+    model_name = "z-image" #@param ["z-image", "krea2"]
     map_location = "cuda" #@param ["cpu", "cuda"]
     acceleration = "regular" #@param ["none", "regular", "high"]
     return locals()
