@@ -272,9 +272,14 @@ neg_prompts = {
 # !!   "cellView": "form",
 # !!   "id": "XVzhbmizWM_u"
 # !! }}
-#@markdown **Load Settings**
+#@markdown **Load Settings / Motion presets**
+#@markdown Set `override_settings_with_file=True` and pick a `settings_file`. The
+#@markdown `2d_*` / `3d_*` entries are motion presets in `settings/` — they set only the
+#@markdown camera move and leave your prompts/resolution/strength alone (see
+#@markdown `settings/README.md`). 3D presets need `--with-3d`. Use "custom" +
+#@markdown `custom_settings_file` to load your own saved JSON (e.g. a render's `*_settings.txt`).
 override_settings_with_file = False #@param {type:"boolean"}
-settings_file = "custom" #@param ["custom", "512x512_aesthetic_0.json","512x512_aesthetic_1.json","512x512_colormatch_0.json","512x512_colormatch_1.json","512x512_colormatch_2.json","512x512_colormatch_3.json"]
+settings_file = "custom" #@param ["custom", "2d_slow_drift.json", "2d_push_in.json", "2d_pull_back.json", "2d_orbit.json", "2d_sway.json", "2d_spiral.json", "2d_handheld.json", "3d_push_through.json", "3d_camera_pan.json"]
 custom_settings_file = "/content/drive/MyDrive/Settings.txt"#@param {type:"string"}
 
 def DeforumArgs():

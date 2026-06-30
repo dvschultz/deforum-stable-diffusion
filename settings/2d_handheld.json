@@ -1,0 +1,8 @@
+{
+  "animation_mode": "2D",
+  "border": "replicate",
+  "angle": "0:(0.5*sin(2*3.14*t/11))",
+  "zoom": "0:(1.004)",
+  "translation_x": "0:(2*sin(2*3.14*t/7)+1.5*sin(2*3.14*t/13))",
+  "translation_y": "0:(1.5*cos(2*3.14*t/9)+1.0*sin(2*3.14*t/5))"
+}
